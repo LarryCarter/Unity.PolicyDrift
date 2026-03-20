@@ -76,43 +76,35 @@ namespace CVIS.Unity.PolicyDrift.ConsoleHost
                     services.AddPolicyDriftOrchestration();
                 });
 
+        // Program.cs -> RunOrchestratorAsync
         private static async Task RunOrchestratorAsync(IServiceProvider services)
         {
             using (var scope = services.CreateScope())
             {
-                var scopedProvider = scope.ServiceProvider;
+                var context = scope.ServiceProvider.GetRequiredService<PolicyDbContext>();
+                var publisher = scope.ServiceProvider.GetRequiredService<IUnityEventPublisher>();
 
                 try
                 {
-                    // 1. Database & Schema Initialization
-                    var context = scopedProvider.GetRequiredService<PolicyDbContext>();
-                    var publisher = scopedProvider.GetRequiredService<IUnityEventPublisher>();
+                    // 1. Apply all pending migrations to THOUSANDSUNNY
+                    // This will create the 'unity' schema and all tables in your migration file.
+                    publisher.LogInfo("Applying Database Migrations...");
+                    await context.Database.MigrateAsync();
 
-                    publisher.LogInfo("Verifying Database Schema 'unity' on THOUSANDSUNNY...");
-
-                    // Cryptorion: Validated. Execute raw SQL for schema before EF handles tables.
-                    await context.Database.ExecuteSqlRawAsync(
-                        "IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'unity') " +
-                        "BEGIN EXEC('CREATE SCHEMA unity') END");
-
-                    // Ensures tables exist without requiring manual migrations 
-                    await context.Database.EnsureCreatedAsync();
-
-                    // 2. Workflow Execution
-                    var workflows = scopedProvider.GetServices<IPolicyWorkflow>();
-
-                    foreach (var workflow in workflows)
-                    {
-                        publisher.LogInfo($"--> Launching Workflow: {workflow.WorkflowName}");
-                        await workflow.ExecuteAsync();
-                    }
+                    publisher.LogInfo("Database is up to date.");
                 }
                 catch (Exception ex)
                 {
-                    // Datyrix: Ensure we log to Serilog/SQL if the init fails
-                    var logger = scopedProvider.GetRequiredService<ILogger<Program>>();
-                    logger.LogCritical(ex, "Orchestration failed during initialization or execution.");
-                    throw; // Re-throw to be caught by the Main try-catch safety net
+                    // If the schema 'unity' already exists and causes a conflict, 
+                    // we catch it here to prevent the whole app from dying.
+                    publisher.LogWarning($"Migration Note: {ex.Message}");
+                }
+
+                // 2. Launch the workflows
+                var workflows = scope.ServiceProvider.GetServices<IPolicyWorkflow>();
+                foreach (var workflow in workflows)
+                {
+                    await workflow.ExecuteAsync();
                 }
             }
         }

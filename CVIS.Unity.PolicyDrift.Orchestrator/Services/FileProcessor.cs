@@ -1,4 +1,5 @@
-﻿using System.IO.Compression;
+﻿using CVIS.Unity.Core.Models;
+using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml.Linq;
@@ -7,16 +8,21 @@ namespace CVIS.Unity.PolicyDrift.Orchestration.Services
 {
     public partial class FileProcessor
     {
-        public async Task<Dictionary<string, string>> ExtractAndParseZipAsync(Stream zipStream, string policyId)
+        public FileProcessor() { } // Add explicit parameterless constructor
+        public virtual async Task<Dictionary<string, string>> ExtractAndParseZipAsync(Stream zipStream, string policyId)
         {
             // We reuse the ProcessZipAsync logic to return the normalized attribute bag
             return await ProcessZipAsync(zipStream);
         }
 
-        public async Task<(Dictionary<string, string> Attributes, Dictionary<string, string> Hashes)> ExtractAndParseZipWithHashesAsync(Stream zipStream, string policyId)
+        public virtual async Task<DiscoveryResult> ExtractAndParseZipWithHashesAsync(Stream zipStream, string policyId)
         {
-            var attributes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            var hashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var discoveryResult = new DiscoveryResult
+            {
+                PolicyId = policyId,
+                Attributes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                Hashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            };
 
             using var archive = new ZipArchive(zipStream, ZipArchiveMode.Read, leaveOpen: true);
             foreach (var entry in archive.Entries)
@@ -27,32 +33,30 @@ namespace CVIS.Unity.PolicyDrift.Orchestration.Services
                 var scopeKey = ext.ToUpperInvariant(); // e.g., "INI", "XML", "DLL"
 
                 using var stream = entry.Open();
-                // We must copy to memory because we need to read the stream twice (Hash + Parse)
                 using var ms = new MemoryStream();
                 await stream.CopyToAsync(ms);
                 var fileBytes = ms.ToArray();
 
                 // 1. Generate Scoped Hash for the Fast-Path
-                hashes[scopeKey] = CalculateHash(fileBytes);
+                discoveryResult.Hashes[scopeKey] = CalculateHash(fileBytes);
 
                 // 2. Parse based on Extension
                 if (ext == "ini")
                 {
-                    ParseIni(fileBytes, attributes);
+                    ParseIni(fileBytes, discoveryResult.Attributes);
                 }
                 else if (ext == "xml")
                 {
-                    ParseXml(fileBytes, attributes);
+                    ParseXml(fileBytes, discoveryResult.Attributes);
                 }
                 else if (ext == "exe" || ext == "dll")
                 {
-                    // Datyrix: For binaries, the hash is the primary attribute
-                    attributes[$"{scopeKey}:FileHash"] = hashes[scopeKey];
-                    attributes[$"{scopeKey}:FileName"] = entry.Name;
+                    discoveryResult.Attributes[$"{scopeKey}:FileHash"] = discoveryResult.Hashes[scopeKey];
+                    discoveryResult.Attributes[$"{scopeKey}:FileName"] = entry.Name;
                 }
             }
 
-            return (attributes, hashes);
+            return discoveryResult;
         }
 
         private string CalculateHash(byte[] bytes)
@@ -61,15 +65,13 @@ namespace CVIS.Unity.PolicyDrift.Orchestration.Services
             return Convert.ToHexString(hashBytes).ToLowerInvariant();
         }
 
-      
-
         private string GenerateSha256(byte[] bytes)
         {
             var hashBytes = SHA256.HashData(bytes);
             return Convert.ToHexString(hashBytes);
         }
 
-        public async Task<Dictionary<string, string>> ProcessZipAsync(Stream zipStream)
+        public virtual async Task<Dictionary<string, string>> ProcessZipAsync(Stream zipStream)
         {
             var attributes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 

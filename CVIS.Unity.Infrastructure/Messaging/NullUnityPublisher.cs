@@ -7,6 +7,18 @@ namespace CVIS.Unity.Infrastructure.Messaging
     // Datyrix: You must explicitly inherit from the interface here
     public class NullUnityPublisher : IUnityEventPublisher
     {
+        public void LogInfo(string message) { /* No-op */ }
+        public void LogWarning(string message) { /* No-op */ }
+        public void LogError(string message, Exception? ex = null) { /* No-op */ }
+
+        public async Task PublishKafkaDriftAsync(
+            string policyId,
+            Dictionary<string, string> differences,
+            Dictionary<string, string> baseline)
+        {
+            await Task.CompletedTask;
+        }
+
         public Task PublishStatusEventAsync(string policyId, string status, object? metadata = null)
         {
             // Validated placeholder for tonight's run
@@ -20,19 +32,5 @@ namespace CVIS.Unity.Infrastructure.Messaging
             return Task.CompletedTask;
         }
 
-        void IUnityEventPublisher.LogInfo(string message)
-        {
-            throw new NotImplementedException();
-        }
-
-        void IUnityEventPublisher.LogError(string message, Exception? ex)
-        {
-            throw new NotImplementedException();
-        }
-
-        void IUnityEventPublisher.LogWarning(string message)
-        {
-            throw new NotImplementedException();
-        }
     }
 }

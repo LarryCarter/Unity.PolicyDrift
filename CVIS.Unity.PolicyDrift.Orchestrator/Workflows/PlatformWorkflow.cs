@@ -23,7 +23,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             IUnityEventPublisher publisher,
             IConfiguration configuration,
             FileProcessor fileProcessor,
-            PolicyDbContext db) : base(fileSystem, publisher)
+            PolicyDbContext db) : base(fileSystem, publisher, configuration)
         {
             // CodeVyrn: You must assign the parameters to the private fields here
             _configuration = configuration;
@@ -88,8 +88,11 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
         }
 
         protected override async Task HandleDriftCheck(string policyId)
-        {//ExtractAndParseZipAsync
+        {
             _publisher.LogInfo($"[PATH-A] Starting Drift Check for: {policyId}");
+            var sourcePath = GetCurrentBatchPath();
+
+            var executionId = GenerateExecutionId(sourcePath);
 
             // 1. Fetch current state from Vault and Generate Scoped Hashes
             using var zipStream = await GetZipFromCyberArk(policyId);
@@ -114,7 +117,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
                     PolicyDriftEvalDetailsID = detailId,
                     Status = "MISSING_BASELINE",
                     RunTimestamp = DateTime.UtcNow,
-                    ExecutionId = Guid.NewGuid()
+                    ExecutionId = executionId
                 };
 
                 await _db.LogDriftEvalAsync(missingEval);
@@ -143,7 +146,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
                 Differences = hasDrift ? driftReport : null,
                 Status = hasDrift ? "DRIFT" : "NO_DRIFT",
                 RunTimestamp = DateTime.UtcNow,
-                ExecutionId = Guid.NewGuid() // Should ideally come from the main loop
+                ExecutionId = executionId // Should ideally come from the main loop
             };
 
             await _db.LogDriftEvalAsync(eval);
@@ -229,14 +232,5 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             ms.Position = 0;
             return ms;
         }
-
-        //private async Task<Stream> GetZipFromCyberArk(string id)
-        //{
-        //    // In the final Unity phase, this calls the CyberArk 'Get Platform' REST API.
-        //    // For tonight's build, we return an empty stream or mock data.
-        //    _publisher.LogInfo($"[VAULT] Requesting Platform Package for {id} via API...");
-
-        //    return new MemoryStream();
-        //}
     }
 }

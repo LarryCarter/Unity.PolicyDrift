@@ -46,5 +46,12 @@ namespace CVIS.Unity.Infrastructure.Messaging
         public void LogWarning(string message) =>
             // Serilog will capture this as a Warning level
             _logger.LogWarning(message);
+
+        public async Task PublishKafkaDriftAsync(string policyId, Dictionary<string, string> differences, Dictionary<string, string> baseline)
+        {
+            // Datyrix: Implementation for local console testing
+            Console.WriteLine($"[KAFKA-DRIFT] {policyId}: {differences.Count} changes detected.");
+            await Task.CompletedTask;
+        }
     }
 }

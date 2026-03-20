@@ -109,6 +109,9 @@ namespace CVIS.Unity.Tests
         public TestablePlatformWorkflow(IUnityEventPublisher pub, FileProcessor fp, PolicyDbContext db)
             : base(null!, pub, null!, fp, db) { }
 
+        // ADD THIS — bypasses null _configuration
+        protected override string GetCurrentBatchPath() => @"C:\MockRepo\Operations\PlatformPolicies\test";
+
         public void MockDiscovery(Dictionary<string, string> data) => _vAttr = data;
 
         public async Task TriggerDriftCheck(string id) => await HandleDriftCheck(id);

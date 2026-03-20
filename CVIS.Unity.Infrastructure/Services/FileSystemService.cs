@@ -20,36 +20,65 @@ namespace CVIS.Unity.Infrastructure.Services
             // Your existing baseline logic
             _baselinePath = config["Storage:BaselinePath"] ?? "C:\\Baselines";
 
-            // Datyrix: New dedicated temp folder for ZIP extractions
+            // New dedicated temp folder for ZIP extractions
             _tempRoot = Path.Combine(Path.GetTempPath(), "CVIS_Unity_Working");
 
             if (!Directory.Exists(_tempRoot)) Directory.CreateDirectory(_tempRoot);
             if (!Directory.Exists(_baselinePath)) Directory.CreateDirectory(_baselinePath);
         }
 
-        #region Existing Signal File Logic (Larry's Original)
+        // --- Section 1: Directory & Batch Management ---
+        public bool DirectoryExists(string path) => Directory.Exists(path);
 
-        public bool SignalFileExists(string policyId)
+        public void CreateDirectory(string path) => Directory.CreateDirectory(path);
+
+        public string[] GetFilesInDirectory(string path, string searchPattern)
+            => Directory.GetFiles(path, searchPattern);
+        public void MoveFile(string source, string destination)
         {
-            var path = Path.Combine(_baselinePath, $"{policyId}.txt");
-            return File.Exists(path);
+            // Ensure the destination directory exists before moving
+            var destDir = Path.GetDirectoryName(destination);
+            if (!string.IsNullOrEmpty(destDir) && !Directory.Exists(destDir))
+                Directory.CreateDirectory(destDir);
+
+            // Retry logic to handle "File In Use" scenarios
+            int maxRetries = 3;
+            int delayMs = 2000; // 2-second breather between attempts
+
+            for (int i = 0; i < maxRetries; i++)
+            {
+                try
+                {
+                    // Overwrite existing files in processing if a batch is restarted
+                    File.Move(source, destination, overwrite: true);
+                    return; // Success, exit the loop
+                }
+                catch (IOException ex) when (IsFileLocked(ex))
+                {
+                    if (i == maxRetries - 1)
+                    {
+                        // Cryptorion: Throw a specific exception for the Orchestrator to catch
+                        throw new InvalidOperationException($"CRITICAL: File {source} remains locked after {maxRetries} attempts.", ex);
+                    }
+
+                    _logger.LogWarning("File {File} is locked. Retrying in {Delay}ms...", source, delayMs);
+                    Thread.Sleep(delayMs);
+                }
+            }
         }
 
-        public void DeleteSignalFile(string policyId)
+        private bool IsFileLocked(IOException exception)
         {
-            var path = Path.Combine(_baselinePath, $"{policyId}.txt");
-            if (File.Exists(path)) File.Delete(path);
+            // Datyrix: Standard HResult for file sharing violations
+            int errorCode = System.Runtime.InteropServices.Marshal.GetHRForException(exception) & 0xFFFF;
+            return errorCode == 32 || errorCode == 33; // 32: Sharing violation, 33: Lock violation
         }
 
-        public string GetFullPath(string fileName)
-        {
-            return Path.Combine(_baselinePath, fileName);
-        }
+        public Stream OpenRead(string path) => File.OpenRead(path);
 
-        #endregion
+        #region Extraction & Cleanup Logic (Unity Workflow)
 
-        #region New Extraction & Cleanup Logic (Unity Workflow)
-
+        // --- Section 2: Extraction & Cleanup ---
         public async Task<string> ExtractPlatformPackage(Stream zipStream, string platformId)
         {
             // CodeVyrn: Create a unique sub-folder for this specific run
@@ -73,16 +102,39 @@ namespace CVIS.Unity.Infrastructure.Services
                 if (Directory.Exists(path))
                 {
                     _logger.LogDebug("Cleaning up temporary directory: {Path}", path);
-                    Directory.Delete(path, recursive: true);
+                    if (Directory.Exists(path)) 
+                        Directory.Delete(path, recursive: true);
                 }
             }
             catch (Exception ex)
             {
-                // Cryptorion: Log warning but don't break the main audit flow if a file handle is stuck
+                // Log warning but don't break the main audit flow if a file handle is stuck
                 _logger.LogWarning(ex, "Failed to clean up path: {Path}. A process may still have a handle.", path);
             }
         }
+        #endregion
+
+        #region Existing Signal File Logic
+
+        public bool SignalFileExists(string policyId)
+        {
+            var path = Path.Combine(_baselinePath, $"{policyId}.txt");
+            return File.Exists(path);
+        }
+
+        public void DeleteSignalFile(string policyId)
+        {
+            var path = Path.Combine(_baselinePath, $"{policyId}.txt");
+            if (File.Exists(path)) File.Delete(path);
+        }
+
+        public string GetFullPath(string fileName)
+        {
+            return Path.Combine(_baselinePath, fileName);
+        }
 
         #endregion
+
+      
     }
 }

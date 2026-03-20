@@ -1,30 +1,31 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
+using System.IO;
 using System.Threading.Tasks;
 
 namespace CVIS.Unity.Core.Interfaces
 {
+    /// <summary>
+    /// Refactored: Provides atomic filesystem operations for Platform Batch Monitoring.
+    /// Logic: Supports directory management, file staging, and signal detection.
+    /// </summary>
     public interface IFileSystemService
     {
-        /// <summary>
-        /// Checks if a {PolicyID}.txt file exists in the configured signal folder.
-        /// </summary>
-        bool SignalFileExists(string policyId);
+        // 1. Directory Management (Section 1 Readiness)
+        bool DirectoryExists(string path);
+        void CreateDirectory(string path);
+        string[] GetFilesInDirectory(string path, string searchPattern);
 
-        /// <summary>
-        /// Deletes the signal file once the baseline update is complete.
-        /// </summary>
-        void DeleteSignalFile(string policyId);
+        // 2. Atomic Orchestration (Drop -> Processing -> Processed)
+        void MoveFile(string source, string destination);
+        Stream OpenRead(string path);
 
-        /// <summary>
-        /// Resolves the full path to a file in a cross-platform manner.
-        /// </summary>
-        string GetFullPath(string fileName);
+        // 3. Signal Gate Logic (Baseline Trigger)
+        bool SignalFileExists(string path);
+        void DeleteSignalFile(string path);
 
-        // New workflow methods for CyberArk ZIP handling
+        // 4. Cleanup and Extraction
         Task<string> ExtractPlatformPackage(Stream zipStream, string platformId);
         void Cleanup(string path);
+        string GetFullPath(string fileName);
     }
 }
