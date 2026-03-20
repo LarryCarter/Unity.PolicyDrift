@@ -32,5 +32,9 @@ namespace CVIS.Unity.Infrastructure.Messaging
             return Task.CompletedTask;
         }
 
+        Task IUnityEventPublisher.SendEmailAsync(string to, string subject, string htmlBody)
+        {
+            throw new NotImplementedException();
+        }
     }
 }

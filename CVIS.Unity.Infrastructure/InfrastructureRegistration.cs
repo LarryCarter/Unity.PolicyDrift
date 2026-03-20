@@ -1,10 +1,12 @@
 ﻿using CVIS.Unity.Core.Interfaces;
 using CVIS.Unity.Infrastructure.Data;
 using CVIS.Unity.Infrastructure.Messaging;
+using CVIS.Unity.Infrastructure.Monitoring;
 using CVIS.Unity.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Win32;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
 
@@ -38,6 +40,9 @@ namespace CVIS.Unity.Infrastructure
 
             // 4. Telemetry (The OTLP Hook)
             services.AddTransient<IFileSystemService, FileSystemService>();
+
+            // Register the new pathing authority
+            services.AddTransient<IPolicyDriftPathProvider, PolicyDriftPathProvider>();
 
             return services;
         }

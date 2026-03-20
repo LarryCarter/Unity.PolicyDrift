@@ -81,23 +81,35 @@ namespace CVIS.Unity.PolicyDrift.ConsoleHost
         {
             using (var scope = services.CreateScope())
             {
-                var context = scope.ServiceProvider.GetRequiredService<PolicyDbContext>();
-                var publisher = scope.ServiceProvider.GetRequiredService<IUnityEventPublisher>();
+                var scopedProvider = scope.ServiceProvider;
 
                 try
                 {
-                    // 1. Apply all pending migrations to THOUSANDSUNNY
-                    // This will create the 'unity' schema and all tables in your migration file.
-                    publisher.LogInfo("Applying Database Migrations...");
-                    await context.Database.MigrateAsync();
+                    // 1. Initialise the Arsenal (Schema & Migrations)
+                    var initializer = scopedProvider.GetRequiredService<DbInitializer>();
+                    await initializer.InitializeAsync();
 
-                    publisher.LogInfo("Database is up to date.");
+                    // 2. Resolve Core Dependencies
+                    var publisher = scopedProvider.GetRequiredService<IUnityEventPublisher>();
+                    var policyWorkflows = scopedProvider.GetServices<IPolicyWorkflow>();
+
+                    // 3. Execution Loop
+                    foreach (var workflow in policyWorkflows)
+                    {
+                        publisher.LogInfo($"--> Launching Workflow: {workflow.WorkflowName}");
+
+                        // Datyrix: Execute the individual platform audit
+                        await workflow.ExecuteAsync();
+                    }
                 }
                 catch (Exception ex)
                 {
-                    // If the schema 'unity' already exists and causes a conflict, 
-                    // we catch it here to prevent the whole app from dying.
-                    publisher.LogWarning($"Migration Note: {ex.Message}");
+                    // Ensure the failure is captured in the System of Record (SQL/Serilog)
+                    var logger = scopedProvider.GetRequiredService<ILogger<Program>>();
+                    logger.LogCritical(ex, "Orchestration failed during initialization or execution.");
+
+                    // Re-throw to trigger the Main catch-block safety net
+                    throw;
                 }
 
                 // 2. Launch the workflows

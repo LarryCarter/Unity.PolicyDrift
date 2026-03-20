@@ -9,11 +9,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
 
-namespace CVIS.Unity.Infrastructure.Data.Migrations
+namespace CVIS.Unity.Infrastructure.Migrations
 {
     [DbContext(typeof(PolicyDbContext))]
-    [Migration("20260320054751_UpdateExecutionIdType")]
-    partial class UpdateExecutionIdType
+    [Migration("20260320063608_InitialUnitySchema")]
+    partial class InitialUnitySchema
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)

@@ -18,5 +18,6 @@ namespace CVIS.Unity.Core.Interfaces
         void LogInfo(string message);
         void LogWarning(string message); // Add this line
         void LogError(string message, Exception? ex = null);
+        Task SendEmailAsync(string to, string subject, string htmlBody);
     }
 }

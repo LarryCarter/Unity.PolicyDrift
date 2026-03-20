@@ -8,7 +8,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
 
-namespace CVIS.Unity.Infrastructure.Data.Migrations
+namespace CVIS.Unity.Infrastructure.Migrations
 {
     [DbContext(typeof(PolicyDbContext))]
     partial class PolicyDbContextModelSnapshot : ModelSnapshot

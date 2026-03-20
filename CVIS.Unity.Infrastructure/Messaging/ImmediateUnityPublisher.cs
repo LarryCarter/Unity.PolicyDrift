@@ -53,5 +53,10 @@ namespace CVIS.Unity.Infrastructure.Messaging
             Console.WriteLine($"[KAFKA-DRIFT] {policyId}: {differences.Count} changes detected.");
             await Task.CompletedTask;
         }
+
+        Task IUnityEventPublisher.SendEmailAsync(string to, string subject, string htmlBody)
+        {
+            throw new NotImplementedException();
+        }
     }
 }

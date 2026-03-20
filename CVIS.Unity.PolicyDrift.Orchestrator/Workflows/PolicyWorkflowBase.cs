@@ -46,14 +46,10 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             var policies = await GetPoliciesAsync();
             foreach (var policyId in policies)
             {
-                if (_fileSystem.SignalFileExists(policyId))
-                {
-                    await HandleBaselineUpdate(policyId);
-                }
-                else
-                {
-                    await HandleDriftCheck(policyId);
-                }
+                // Signal file detection is now handled inside HandleDriftCheck
+                // after the ZIP is parsed, so every policy follows one unified path:
+                // Unzip → Signal Check → Optional Promotion → Always Evaluate
+                await HandleDriftCheck(policyId);
             }
         }
 

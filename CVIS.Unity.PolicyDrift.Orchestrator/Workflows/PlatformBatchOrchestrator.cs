@@ -12,9 +12,9 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
 {
     public class PlatformBatchOrchestrator : PolicyWorkflowBase
     {
-        private readonly IConfiguration _configuration;
-        private readonly IFileProcessor _fileProcessor;
+        private readonly IConfiguration _configuration; 
         private readonly PolicyDbContext _db;
+        private readonly IFileProcessor _fileProcessor;
 
         public PlatformBatchOrchestrator(
             IFileSystemService fileSystem,
@@ -23,18 +23,18 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             IFileProcessor fileProcessor,
             PolicyDbContext db) : base(fileSystem, publisher, configuration)
         {
-            _configuration = configuration;
-            _fileProcessor = fileProcessor;
+            _configuration = configuration; 
             _db = db;
+            _fileProcessor = fileProcessor;
         }
 
-        public override string WorkflowName => "CyberArk Platform Batch Refinery";
+        public override string WorkflowName => "CyberArk Platform Batch ";
 
 
         public async Task RunBatchRefineryAsync()
         {
             // 1. Foundation Guard: Prevent ArgumentNullException
-            var workingFolder = _configuration["Monitoring:WorkingFolder"];
+            var workingFolder = _configuration["Monitoring:UpdatePolicyFolder"];
             if (string.IsNullOrEmpty(workingFolder))
             {
                 _publisher.LogError("CRITICAL: 'Monitoring:WorkingFolder' is missing. Batch aborted.");
@@ -44,9 +44,9 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             var currentDate = DateTime.UtcNow.ToString("yyyy-MM-dd");
 
             // 2. Derive Atomic Paths
-            var sourcePath = Path.Combine(workingFolder, "PlatformPolicies", currentDate);
-            var processingPath = Path.Combine(workingFolder, "PlatformPolicies", "processing", currentDate);
-            var processedPath = Path.Combine(workingFolder, "PlatformPolicies", "processed", currentDate);
+            var sourcePath = Path.Combine(workingFolder, currentDate);
+            var processingPath = Path.Combine(workingFolder, currentDate, "processing");
+            var processedPath = Path.Combine(workingFolder, currentDate, "processed");
 
             // 3. Batch Identity
             var executionId = GenerateExecutionId(sourcePath);
@@ -93,7 +93,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
 
             // Cryptorion: Final Technical Cleanup
             var currentDate = DateTime.UtcNow.ToString("yyyy-MM-dd");
-            var processingPath = Path.Combine(_configuration["Monitoring:WorkingFolder"], "PlatformPolicies", "processing", currentDate);
+            var processingPath = Path.Combine(_configuration["Monitoring:WorkingFolder"], currentDate, "processing");
 
             if (_fileSystem.DirectoryExists(processingPath))
             {
@@ -182,14 +182,14 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             var discovery = await _fileProcessor.ExtractAndParseZipWithHashesAsync(zipStream, policyId);
 
             // 2. The Baseline Gate: Check for manual override signal
-            var updateSignalPath = Path.Combine(_configuration["Monitoring:UpdatePolicyFolder"], $"{policyId}.txt");
+            var updateSignalPath = Path.Combine(_configuration["Monitoring:WorkingFolder"], $"{policyId}.txt");
 
             if (_fileSystem.SignalFileExists(updateSignalPath))
             {
                 // PATH B: Baseline Promotion
                 await HandleBaselinePromotion(policyId, discovery);
                 _fileSystem.DeleteSignalFile(updateSignalPath);
-                _publisher.LogInfo($"[BASELINE] Promoted new Gold Standard for {policyId}. Signal cleared.");
+                _publisher.LogInfo($"[BASELINE] Promoted new Baseline for {policyId}. Signal cleared.");
             }
 
             // 3. Audit Engine: Determine Drift Status

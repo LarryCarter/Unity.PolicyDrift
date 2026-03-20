@@ -18,7 +18,8 @@ namespace CVIS.Unity.Infrastructure.Services
         {
             _logger = logger;
             // Your existing baseline logic
-            _baselinePath = config["Storage:BaselinePath"] ?? "C:\\Baselines";
+            _baselinePath = config["Storage:BaselinePath"] ?? "C:\\CVIS\\PolicyDrift\\BaselineUpdate";
+            _baselinePath = config["Monitoring:UpdatePolicyFolder"] ?? "";
 
             // New dedicated temp folder for ZIP extractions
             _tempRoot = Path.Combine(Path.GetTempPath(), "CVIS_Unity_Working");

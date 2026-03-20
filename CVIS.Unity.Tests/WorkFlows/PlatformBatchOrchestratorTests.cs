@@ -204,8 +204,8 @@ namespace CVIS.Unity.Tests.Workflows
         {
             // Arrange: Setup a scenario where the ZIP already exists in the destination
             var today = DateTime.UtcNow.ToString("yyyy-MM-dd");
-            var sourcePath = Path.Combine(WorkingFolder, "PlatformPolicies", today);
-            var processingPath = Path.Combine(WorkingFolder, "PlatformPolicies", "processing", today);
+            var sourcePath = Path.Combine(WorkingFolder, today);
+            var processingPath = Path.Combine(WorkingFolder, today, "processing");
 
             var zipFile = "CollisionTest.zip";
             var sourceFile = Path.Combine(sourcePath, zipFile);
