@@ -41,8 +41,16 @@ namespace CVIS.Unity.Infrastructure
             // 4. Telemetry (The OTLP Hook)
             services.AddTransient<IFileSystemService, FileSystemService>();
 
+            // Register the new policy extraction service
+            services.AddTransient<IPackageExtractionService, PackageExtractionService>();
+
+            // Register the new Baseline Update Service
+            services.AddTransient<ISignalFileService, SignalFileService>();
+
+
             // Register the new pathing authority
             services.AddTransient<IPolicyDriftPathProvider, PolicyDriftPathProvider>();
+
 
             return services;
         }

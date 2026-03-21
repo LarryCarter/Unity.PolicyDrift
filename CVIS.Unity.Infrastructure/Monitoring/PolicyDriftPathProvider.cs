@@ -11,10 +11,13 @@ using System.Threading.Tasks;
 
 namespace CVIS.Unity.Infrastructure.Monitoring
 {
+    // ─────────────────────────────────────────────────────────────
+    //  Implementation
+    // ─────────────────────────────────────────────────────────────
     public class PolicyDriftPathProvider : IPolicyDriftPathProvider
     {
         private readonly IConfiguration _configuration;
-        private readonly IFileSystem _fileSystem;
+        private readonly IFileSystemService _fileSystem;
         private readonly IUnityEventPublisher _publisher;
 
         // Config keys — single source of truth
@@ -23,7 +26,7 @@ namespace CVIS.Unity.Infrastructure.Monitoring
 
         public PolicyDriftPathProvider(
             IConfiguration configuration,
-            IFileSystem fileSystem,
+            IFileSystemService fileSystem,
             IUnityEventPublisher publisher)
         {
             _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
@@ -39,7 +42,7 @@ namespace CVIS.Unity.Infrastructure.Monitoring
             // ── 1. Config Validation ─────────────────────────────────
             //    Missing config = human intervention required → Kafka alert
             var baselineFolder = _configuration[BaselineFolderKey];
-            if (string.IsNullOrEmpty(baselineFolder))
+            if (string.IsNullOrWhiteSpace(baselineFolder))
             {
                 var error = $"CRITICAL: '{BaselineFolderKey}' is missing in configuration. " +
                             "Drift eval cannot proceed without a baseline reference path.";
@@ -49,7 +52,7 @@ namespace CVIS.Unity.Infrastructure.Monitoring
             }
 
             var evalRoot = _configuration[EvalRootKey];
-            if (string.IsNullOrEmpty(evalRoot))
+            if (string.IsNullOrWhiteSpace(evalRoot))
             {
                 var error = $"CRITICAL: '{EvalRootKey}' is missing in configuration. " +
                             "Drift eval cannot proceed without an evaluation root path.";
@@ -64,7 +67,7 @@ namespace CVIS.Unity.Infrastructure.Monitoring
             EnsureRootFolder(evalRoot, EvalRootKey);
 
             // ── 3. Path Derivation ───────────────────────────────────
-            var dateStamp = asOfUtc.ToString("yyyy-MM-dd");
+            var dateStamp = asOfUtc.ToString("MM-dd-yyyy");
             var sourcePath = Path.Combine(evalRoot, dateStamp);
             var processingPath = Path.Combine(sourcePath, "Processing");
             var processedPath = Path.Combine(sourcePath, "Processed");

@@ -12,43 +12,25 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
     {
         protected readonly IFileSystemService _fileSystem;
         protected readonly IUnityEventPublisher _publisher;
-        protected readonly IConfiguration _configuration;
+        protected readonly IPolicyDriftPathProvider _driftPath;
 
-        protected PolicyWorkflowBase(IFileSystemService fileSystem, IUnityEventPublisher publisher, IConfiguration configuration)
+        protected PolicyWorkflowBase(
+            IFileSystemService fileSystem,
+            IUnityEventPublisher publisher,
+            IPolicyDriftPathProvider driftPath)
         {
-            _fileSystem = fileSystem;
-            _publisher = publisher;
-            _configuration = configuration;
+            _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
+            _publisher = publisher ?? throw new ArgumentNullException(nameof(publisher));
+            _driftPath = driftPath ?? throw new ArgumentNullException(nameof(driftPath));
         }
 
         public abstract string WorkflowName { get; }
 
-        // Logic Anchor: Deterministic Identity
-        public string GenerateExecutionId(string path)
-        {
-            byte[] pathBytes = Encoding.UTF8.GetBytes(path.ToLowerInvariant());
-            byte[] hashBytes = System.Security.Cryptography.SHA256.HashData(pathBytes);
-            return Convert.ToHexString(hashBytes);
-        }
-
-        // Configuration-Driven Path Resolver
-        protected virtual string GetCurrentBatchPath()
-        {
-            var root = _configuration["Monitoring:WorkingFolder"] ?? @"C:\Baselines";
-            var today = DateTime.UtcNow.ToString("yyyy-MM-dd");
-            return Path.Combine(root, "PlatformPolicies", today);
-        }
-
-        // Mark this virtual so the Batch Orchestrator can override it
         public virtual async Task ExecuteAsync()
         {
-            // Default logic for single-policy polling
             var policies = await GetPoliciesAsync();
             foreach (var policyId in policies)
             {
-                // Signal file detection is now handled inside HandleDriftCheck
-                // after the ZIP is parsed, so every policy follows one unified path:
-                // Unzip → Signal Check → Optional Promotion → Always Evaluate
                 await HandleDriftCheck(policyId);
             }
         }

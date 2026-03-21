@@ -11,7 +11,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace CVIS.Unity.Tests.Monitoring
+namespace CVIS.Unity.Tests.Infrastructure
 {
     [TestFixture]
     public class PolicyDriftPathProviderTests
@@ -20,7 +20,7 @@ namespace CVIS.Unity.Tests.Monitoring
         //  Test harness — shared fakes & builder
         // ─────────────────────────────────────────────────────────
 
-        private Mock<IFileSystem> _fileSystem;
+        private Mock<IFileSystemService> _fileSystem;
         private Mock<IUnityEventPublisher> _publisher;
 
         private const string TestBaselineFolder = @"C:\Baselines\Platform";
@@ -29,7 +29,7 @@ namespace CVIS.Unity.Tests.Monitoring
         [SetUp]
         public void SetUp()
         {
-            _fileSystem = new Mock<IFileSystem>();
+            _fileSystem = new Mock<IFileSystemService>();
             _publisher = new Mock<IUnityEventPublisher>();
         }
 

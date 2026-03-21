@@ -7,6 +7,9 @@ using System.Threading.Tasks;
 
 namespace CVIS.Unity.Core.Interfaces
 {
+    // ─────────────────────────────────────────────────────────────
+    //  Contract
+    // ─────────────────────────────────────────────────────────────
     public interface IPolicyDriftPathProvider
     {
         /// <summary>

@@ -6,6 +6,9 @@ using System.Threading.Tasks;
 
 namespace CVIS.Unity.Core.Monitoring
 {
+    // ─────────────────────────────────────────────────────────────
+    //  Immutable snapshot: everything a consumer needs for one drift eval run
+    // ─────────────────────────────────────────────────────────────
     public sealed class PolicyDriftContext
     {
         public string BaselineFolder { get; }

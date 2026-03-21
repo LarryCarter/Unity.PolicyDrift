@@ -135,11 +135,13 @@ namespace CVIS.Unity.Infrastructure.Data
 
         /// <summary>
         /// Updates an existing baseline or creates a new one.
+        /// History is preserved: old record is deactivated, new record inserted with version+1.
         /// </summary>
         public async Task<(int OldVersion, int NewVersion)> UpsertBaselineAsync(
             string policyId,
             Dictionary<string, string> attributes,
-            Dictionary<string, string>? hashes = null)
+            Dictionary<string, string>? hashes = null,
+            string? snowTicketId = null)
         {
             // 1. Find the current active baseline for this platform
             var existing = await PlatformBaselines
@@ -166,7 +168,8 @@ namespace CVIS.Unity.Infrastructure.Data
                 AttributesHash = hashes ?? new Dictionary<string, string>(),
                 IsActive = true,
                 CreatedAt = DateTime.UtcNow,
-                Version = newVersion
+                Version = newVersion,
+                LastSNOWTicket = snowTicketId
             };
 
             await PlatformBaselines.AddAsync(newBaseline);

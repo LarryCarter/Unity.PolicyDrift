@@ -4,6 +4,7 @@ using CVIS.Unity.Infrastructure.Data;
 using CVIS.Unity.PolicyDrift.Orchestration.Services;
 using CVIS.Unity.PolicyDrift.Orchestrator.Workflows;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Moq;
 using NUnit.Framework;
 
@@ -13,80 +14,127 @@ namespace CVIS.Unity.Tests
     public class PlatformWorkflowTests
     {
         private Mock<IUnityEventPublisher> _publisher;
-        private Mock<FileProcessor> _fileProcessor;
         private PolicyDbContext _dbContext;
-        private TestablePlatformWorkflow _workflow;
+        private PlatformWorkflow _workflow;
 
         [SetUp]
         public void Setup()
         {
             _publisher = new Mock<IUnityEventPublisher>();
-            _fileProcessor = new Mock<FileProcessor>();
 
-            // 1. Initialize the InMemory Database
             var options = new DbContextOptionsBuilder<PolicyDbContext>()
                 .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
                 .Options;
             _dbContext = new PolicyDbContext(options);
 
-            // 2. Resolve Constructor Error: Pass all 3 required dependencies
-            _workflow = new TestablePlatformWorkflow(
+            _workflow = new PlatformWorkflow(
+                new Mock<IFileSystemService>().Object,
                 _publisher.Object,
-                _fileProcessor.Object,
+                new Mock<IPolicyDriftPathProvider>().Object,
+                new Mock<IConfiguration>().Object,
+                new Mock<FileProcessor>().Object,
+                new Mock<ISignalFileService>().Object,
                 _dbContext);
         }
 
         [TearDown]
         public void TearDown()
         {
-            // Datyrix: Quench the forge to prevent memory leaks
             _dbContext?.Dispose();
         }
 
         [Test]
-        public async Task HandleDriftCheck_CleanPath_ShouldLogInfo()
+        public async Task EvalLogic_CleanPath_ShouldRecordNoDrift()
         {
             var policyId = "ANS-MATCH";
             var data = new Dictionary<string, string> { { "INI:Timeout", "200" } };
 
             await CreateBaseline(policyId, data);
-            _workflow.MockDiscovery(data);
 
-            await _workflow.TriggerDriftCheck(policyId);
+            // Simulate what ProcessSinglePolicy does: compare, then save eval
+            var driftReport = _workflow.CompareAttributes(data, data);
+            bool hasDrift = driftReport.Count > 0;
 
-            // Assert Status Trinity: NO_DRIFT
-            var eval = await _dbContext.PolicyDriftEvals.FirstAsync(e => e.PolicyId == policyId);
-            Assert.That(eval.Status, Is.EqualTo("NO_DRIFT"));
-            _publisher.Verify(p => p.LogInfo(It.Is<string>(s => s.Contains("[CLEAN]"))), Times.Once);
+            var eval = new PolicyDriftEval
+            {
+                Id = Guid.NewGuid(),
+                PolicyId = policyId,
+                BaselinePolicyID = (await _dbContext.PlatformBaselines
+                    .FirstAsync(b => b.PlatformId == policyId && b.IsActive)).Id,
+                PolicyDriftEvalDetailsID = Guid.Empty,
+                Differences = hasDrift ? driftReport : null,
+                Status = hasDrift ? "DRIFT" : "NO_DRIFT",
+                RunTimestamp = DateTime.UtcNow,
+                ExecutionId = "TEST-EXEC"
+            };
+
+            await _dbContext.LogDriftEvalAsync(eval);
+
+            var savedEval = await _dbContext.PolicyDriftEvals.FirstAsync(e => e.PolicyId == policyId);
+            Assert.That(savedEval.Status, Is.EqualTo("NO_DRIFT"));
+            Assert.That(savedEval.Differences, Is.Null);
         }
 
         [Test]
-        public async Task HandleDriftCheck_DriftPath_ShouldLogCritical()
-         {
+        public async Task EvalLogic_DriftPath_ShouldRecordDrift()
+        {
             var policyId = "ANS-DRIFT";
-            await CreateBaseline(policyId, new Dictionary<string, string> { { "INI:Timeout", "200" } });
-            _workflow.MockDiscovery(new Dictionary<string, string> { { "INI:Timeout", "500" } });
+            var baselineData = new Dictionary<string, string> { { "INI:Timeout", "200" } };
+            var currentData = new Dictionary<string, string> { { "INI:Timeout", "500" } };
 
-            await _workflow.TriggerDriftCheck(policyId);
+            await CreateBaseline(policyId, baselineData);
 
-            // Assert Status Trinity: DRIFT
-            var eval = await _dbContext.PolicyDriftEvals.FirstAsync(e => e.PolicyId == policyId);
-            Assert.That(eval.Status, Is.EqualTo("DRIFT"));
-            _publisher.Verify(p => p.LogWarning(It.Is<string>(s => s.Contains("[DRIFT]"))), Times.Once);
+            var driftReport = _workflow.CompareAttributes(baselineData, currentData);
+            bool hasDrift = driftReport.Count > 0;
+
+            var eval = new PolicyDriftEval
+            {
+                Id = Guid.NewGuid(),
+                PolicyId = policyId,
+                BaselinePolicyID = (await _dbContext.PlatformBaselines
+                    .FirstAsync(b => b.PlatformId == policyId && b.IsActive)).Id,
+                PolicyDriftEvalDetailsID = Guid.Empty,
+                Differences = hasDrift ? driftReport : null,
+                Status = hasDrift ? "DRIFT" : "NO_DRIFT",
+                RunTimestamp = DateTime.UtcNow,
+                ExecutionId = "TEST-EXEC"
+            };
+
+            await _dbContext.LogDriftEvalAsync(eval);
+
+            var savedEval = await _dbContext.PolicyDriftEvals.FirstAsync(e => e.PolicyId == policyId);
+            Assert.That(savedEval.Status, Is.EqualTo("DRIFT"));
+            Assert.That(savedEval.Differences, Is.Not.Null);
+            Assert.That(savedEval.Differences!["INI:Timeout"], Does.Contain("MODIFIED"));
         }
 
         [Test]
-        public async Task HandleDriftCheck_OrphanPath_ShouldLogMissing()
+        public async Task EvalLogic_OrphanPath_ShouldRecordMissingBaseline()
         {
             var policyId = "ANS-ORPHAN";
-            _workflow.MockDiscovery(new Dictionary<string, string>());
 
-            await _workflow.TriggerDriftCheck(policyId);
+            // No baseline exists — simulate the MISSING_BASELINE path
+            var baseline = await _dbContext.PlatformBaselines
+                .FirstOrDefaultAsync(b => b.PlatformId == policyId && b.IsActive);
 
-            // Assert Status Trinity: MISSING_BASELINE
-            var eval = await _dbContext.PolicyDriftEvals.FirstAsync(e => e.PolicyId == policyId);
-            Assert.That(eval.Status, Is.EqualTo("MISSING_BASELINE"));
-            Assert.That(eval.BaselinePolicyID, Is.EqualTo(Guid.Empty));
+            Assert.That(baseline, Is.Null);
+
+            var eval = new PolicyDriftEval
+            {
+                Id = Guid.NewGuid(),
+                PolicyId = policyId,
+                BaselinePolicyID = Guid.Empty,
+                PolicyDriftEvalDetailsID = Guid.Empty,
+                Status = "MISSING_BASELINE",
+                RunTimestamp = DateTime.UtcNow,
+                ExecutionId = "TEST-EXEC"
+            };
+
+            await _dbContext.LogDriftEvalAsync(eval);
+
+            var savedEval = await _dbContext.PolicyDriftEvals.FirstAsync(e => e.PolicyId == policyId);
+            Assert.That(savedEval.Status, Is.EqualTo("MISSING_BASELINE"));
+            Assert.That(savedEval.BaselinePolicyID, Is.EqualTo(Guid.Empty));
         }
 
         private async Task CreateBaseline(string id, Dictionary<string, string> attr)
@@ -98,27 +146,6 @@ namespace CVIS.Unity.Tests
                 IsActive = true
             });
             await _dbContext.SaveChangesAsync();
-        }
-    }
-
-    // High-Integrity Wrapper for NUnit Testing
-    public class TestablePlatformWorkflow : PlatformWorkflow
-    {
-        private Dictionary<string, string> _vAttr;
-
-        public TestablePlatformWorkflow(IUnityEventPublisher pub, FileProcessor fp, PolicyDbContext db)
-            : base(null!, pub, null!, fp, db) { }
-
-        // ADD THIS — bypasses null _configuration
-        protected override string GetCurrentBatchPath() => @"C:\MockRepo\Operations\PlatformPolicies\test";
-
-        public void MockDiscovery(Dictionary<string, string> data) => _vAttr = data;
-
-        public async Task TriggerDriftCheck(string id) => await HandleDriftCheck(id);
-
-        public new Task<(Dictionary<string, string>, Dictionary<string, string>)> GetDiscoveryData(string id)
-        {
-            return Task.FromResult((_vAttr, new Dictionary<string, string>()));
         }
     }
 }

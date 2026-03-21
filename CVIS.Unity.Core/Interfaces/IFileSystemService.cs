@@ -3,29 +3,27 @@ using System.IO;
 using System.Threading.Tasks;
 
 namespace CVIS.Unity.Core.Interfaces
-{
-    /// <summary>
-    /// Refactored: Provides atomic filesystem operations for Platform Batch Monitoring.
-    /// Logic: Supports directory management, file staging, and signal detection.
-    /// </summary>
+{/// <summary>
+ /// Pure filesystem abstraction — stateless, config-free, cross-platform.
+ /// No domain knowledge. No path derivation. Just OS-level I/O.
+ /// Injected into domain services (PolicyDriftPathProvider, orchestrators, processors)
+ /// that own the path logic themselves.
+ /// </summary>
     public interface IFileSystemService
     {
-        // 1. Directory Management (Section 1 Readiness)
+        // ── Directory Operations ──────────────────────────────────
         bool DirectoryExists(string path);
         void CreateDirectory(string path);
         string[] GetFilesInDirectory(string path, string searchPattern);
 
-        // 2. Atomic Orchestration (Drop -> Processing -> Processed)
+        // ── File Operations ───────────────────────────────────────
+        bool FileExists(string path);
         void MoveFile(string source, string destination);
+        void DeleteFile(string path);
         Stream OpenRead(string path);
+        string ReadAllText(string path);
 
-        // 3. Signal Gate Logic (Baseline Trigger)
-        bool SignalFileExists(string path);
-        void DeleteSignalFile(string path);
-
-        // 4. Cleanup and Extraction
-        Task<string> ExtractPlatformPackage(Stream zipStream, string platformId);
-        void Cleanup(string path);
-        string GetFullPath(string fileName);
+        // ── Cleanup ───────────────────────────────────────────────
+        void DeleteDirectory(string path, bool recursive);
     }
 }

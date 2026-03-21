@@ -73,7 +73,7 @@ namespace CVIS.Unity.Tests
         public async Task SavePolicyEvent_Normalizes_Anonymous_Metadata()
         {
             // Arrange: Datyrix flexible metadata
-            var meta = new { Version = 2.0, Status = "Verified" };
+            var meta = new { Version = 2, Status = "Verified" };
 
             // Act
             await _context.SavePolicyEventAsync("ANS-TEST", "DRIFT_CHECK", "AUDIT", meta);
