@@ -218,10 +218,10 @@ namespace CVIS.Unity.Tests.Infrastructure
 
             Assert.That(ctx.BaselineFolder, Is.EqualTo(TestBaselineFolder));
             Assert.That(ctx.EvalRoot, Is.EqualTo(TestEvalRoot));
-            Assert.That(ctx.DateStamp, Is.EqualTo("2025-07-15"));
-            Assert.That(ctx.SourcePath, Is.EqualTo(Path.Combine(TestEvalRoot, "2025-07-15")));
-            Assert.That(ctx.ProcessingPath, Is.EqualTo(Path.Combine(TestEvalRoot, "2025-07-15", "Processing")));
-            Assert.That(ctx.ProcessedPath, Is.EqualTo(Path.Combine(TestEvalRoot, "2025-07-15", "Processed")));
+            Assert.That(ctx.DateStamp, Is.EqualTo("07-15-2025"));
+            Assert.That(ctx.SourcePath, Is.EqualTo(Path.Combine(TestEvalRoot, "07-15-2025")));
+            Assert.That(ctx.ProcessingPath, Is.EqualTo(Path.Combine(TestEvalRoot, "07-15-2025", "Processing")));
+            Assert.That(ctx.ProcessedPath, Is.EqualTo(Path.Combine(TestEvalRoot, "07-15-2025", "Processed")));
         }
 
         [Test]
@@ -274,7 +274,7 @@ namespace CVIS.Unity.Tests.Infrastructure
         {
             _fileSystem.Setup(fs => fs.DirectoryExists(It.IsAny<string>())).Returns(true);
             var fixedDate = new DateTime(2025, 7, 15, 0, 0, 0, DateTimeKind.Utc);
-            var expectedPath = Path.Combine(TestEvalRoot, "2025-07-15");
+            var expectedPath = Path.Combine(TestEvalRoot, "07-15-2025");
 
             var provider = CreateProvider();
             var result = await provider.BuildDriftContextAsync(fixedDate);
@@ -359,8 +359,8 @@ namespace CVIS.Unity.Tests.Infrastructure
             var provider = CreateProvider();
             var result = await provider.BuildDriftContextAsync(historicalDate);
 
-            Assert.That(result.Context!.DateStamp, Is.EqualTo("2024-01-01"));
-            Assert.That(result.Context.SourcePath, Does.Contain("2024-01-01"));
+            Assert.That(result.Context!.DateStamp, Is.EqualTo("01-01-2024"));
+            Assert.That(result.Context.SourcePath, Does.Contain("01-01-2024"));
         }
 
         // ─────────────────────────────────────────────────────────

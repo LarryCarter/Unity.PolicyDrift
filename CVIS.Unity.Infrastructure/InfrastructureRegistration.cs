@@ -51,6 +51,8 @@ namespace CVIS.Unity.Infrastructure
             // Register the new pathing authority
             services.AddTransient<IPolicyDriftPathProvider, PolicyDriftPathProvider>();
 
+            // Register the new drift comparison service
+            services.AddSingleton<IDriftComparisonService, DriftComparisonService>();
 
             return services;
         }

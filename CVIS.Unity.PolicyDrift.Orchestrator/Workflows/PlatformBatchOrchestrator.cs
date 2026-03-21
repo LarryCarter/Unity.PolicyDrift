@@ -16,6 +16,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
         private readonly PolicyDbContext _db;
         private readonly IFileProcessor _fileProcessor;
         private readonly ISignalFileService _signalFiles;
+        private readonly IDriftComparisonService _driftComparison;
 
         public PlatformBatchOrchestrator(
             IFileSystemService fileSystem,
@@ -23,12 +24,14 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             IPolicyDriftPathProvider driftPath,
             IFileProcessor fileProcessor,
             ISignalFileService signalFiles,
+            IDriftComparisonService driftComparison,
             PolicyDbContext db)
             : base(fileSystem, publisher, driftPath)
         {
             _db = db ?? throw new ArgumentNullException(nameof(db));
             _fileProcessor = fileProcessor ?? throw new ArgumentNullException(nameof(fileProcessor));
             _signalFiles = signalFiles ?? throw new ArgumentNullException(nameof(signalFiles));
+            _driftComparison = driftComparison ?? throw new ArgumentNullException(nameof(driftComparison));
         }
 
         public override string WorkflowName => "CyberArk Platform Batch";
@@ -118,9 +121,26 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             // 2. Baseline Gate — signal file check uses the context's baseline folder
             if (_signalFiles.Exists(ctx.BaselineFolder, policyId))
             {
-                await HandleBaselinePromotion(policyId, discovery);
-                _signalFiles.TryDelete(ctx.BaselineFolder, policyId);
-                _publisher.LogInfo($"[BASELINE] Promoted new Baseline for {policyId}. Signal cleared.");
+                var snowTicketId = _signalFiles.ReadTicketId(ctx.BaselineFolder, policyId);
+
+                if (!_driftComparison.IsPromotionAllowed(snowTicketId))
+                {
+                    _publisher.LogError(
+                        $"[BASELINE] Rejecting promotion for {policyId} — SNOW ticket is required but not provided.",
+                        null);
+                    await _publisher.PublishStatusEventAsync(policyId, "BASELINE_PROMOTION_REJECTED", new
+                    {
+                        Reason = "SNOW ticket required but not provided",
+                        ExecutionId = ctx.ExecutionId
+                    });
+                    // Do NOT consume the signal file
+                }
+                else
+                {
+                    await HandleBaselinePromotion(policyId, discovery, snowTicketId);
+                    _signalFiles.TryDelete(ctx.BaselineFolder, policyId);
+                    _publisher.LogInfo($"[BASELINE] Promoted new Baseline for {policyId}. Signal consumed.");
+                }
             }
 
             // 3. Audit Engine
@@ -135,7 +155,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
         //  Baseline Promotion
         // ─────────────────────────────────────────────────────────
 
-        private async Task HandleBaselinePromotion(string policyId, DiscoveryResult discovery)
+        private async Task HandleBaselinePromotion(string policyId, DiscoveryResult discovery, string? snowTicketId)
         {
             if (discovery.Attributes == null || !discovery.Attributes.Any())
             {
@@ -151,26 +171,20 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
                 return;
             }
 
-            var existingBaselines = await _db.PlatformBaselines
-                .Where(b => b.PlatformId == policyId && b.IsActive)
-                .ToListAsync();
+            var (oldVersion, newVersion) = await _db.UpsertBaselineAsync(
+                policyId, discovery.Attributes, discovery.Hashes, snowTicketId);
 
-            foreach (var b in existingBaselines) b.IsActive = false;
-
-            await _db.PlatformBaselines.AddAsync(new PlatformBaseline
+            await _publisher.PublishStatusEventAsync(policyId, "BASELINE_PROMOTED", new
             {
-                Id = Guid.NewGuid(),
-                PlatformId = policyId,
-                Attributes = discovery.Attributes,
-                AttributesHash = discovery.Hashes,
-                IsActive = true,
-                CreatedAt = DateTime.UtcNow
+                OldVersion = oldVersion,
+                NewVersion = newVersion,
+                AttributeCount = discovery.Attributes.Count,
+                SNOWTicket = snowTicketId ?? "NOT_PROVIDED"
             });
 
-            await _db.SaveChangesAsync();
-
             _publisher.LogInfo(
-                $"[BASELINE] {policyId} promoted successfully with {discovery.Attributes.Count} attributes.");
+                $"[BASELINE] {policyId} promoted: v{oldVersion} → v{newVersion} " +
+                $"with {discovery.Attributes.Count} attributes. SNOW: {snowTicketId ?? "N/A"}");
         }
 
         // ─────────────────────────────────────────────────────────
@@ -198,7 +212,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
 
             if (!isMatch)
             {
-                differences = CompareAttributes(baseline.Attributes, discovery.Attributes);
+                differences = _driftComparison.CompareAttributes(baseline.Attributes, discovery.Attributes);
                 status = differences.Count > 0 ? "DRIFT" : "NO_DRIFT";
             }
 
@@ -303,30 +317,6 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
 
             return baseHashes.All(k =>
                 discoveryHashes.ContainsKey(k.Key) && discoveryHashes[k.Key] == k.Value);
-        }
-
-        private Dictionary<string, string> CompareAttributes(
-            Dictionary<string, string> baseline,
-            Dictionary<string, string> current)
-        {
-            var changes = new Dictionary<string, string>();
-            var ignoreList = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            {
-                "INI:ApiVersion",
-                "XML:LastModified"
-            };
-
-            foreach (var baseKvp in baseline)
-            {
-                if (ignoreList.Contains(baseKvp.Key)) continue;
-
-                if (!current.ContainsKey(baseKvp.Key))
-                    changes[baseKvp.Key] = $"REMOVED (Was: {baseKvp.Value})";
-                else if (current[baseKvp.Key] != baseKvp.Value)
-                    changes[baseKvp.Key] = $"MODIFIED (Base: {baseKvp.Value} | Current: {current[baseKvp.Key]})";
-            }
-
-            return changes;
         }
 
         // ─────────────────────────────────────────────────────────

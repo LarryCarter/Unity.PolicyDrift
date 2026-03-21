@@ -1,5 +1,6 @@
 ﻿using CVIS.Unity.Core.Interfaces;
 using CVIS.Unity.Infrastructure.Data;
+using CVIS.Unity.Infrastructure.Services;
 using CVIS.Unity.PolicyDrift.Orchestration.Services;
 using CVIS.Unity.PolicyDrift.Orchestrator.Workflows;
 using Microsoft.EntityFrameworkCore;
@@ -22,9 +23,15 @@ namespace CVIS.Unity.Tests
             var mockFileSystem = new Mock<IFileSystemService>();
             _mockPublisher = new Mock<IUnityEventPublisher>();
             var mockDriftPath = new Mock<IPolicyDriftPathProvider>();
-            var mockConfig = new Mock<IConfiguration>();
             var mockFileProcessor = new Mock<FileProcessor>();
             var mockSignalFiles = new Mock<ISignalFileService>();
+
+            // Real config with all defaults — all scopes enabled, SNOW not required
+            var config = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>())
+                .Build();
+
+            var driftComparison = new DriftComparisonService(config, _mockPublisher.Object);
 
             var options = new DbContextOptionsBuilder<PolicyDbContext>()
                 .UseInMemoryDatabase(Guid.NewGuid().ToString())
@@ -35,9 +42,10 @@ namespace CVIS.Unity.Tests
                 mockFileSystem.Object,
                 _mockPublisher.Object,
                 mockDriftPath.Object,
-                mockConfig.Object,
+                config,
                 mockFileProcessor.Object,
                 mockSignalFiles.Object,
+                driftComparison,
                 _dbContext);
         }
 

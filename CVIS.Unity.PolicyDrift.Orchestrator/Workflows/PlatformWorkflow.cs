@@ -21,6 +21,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
         private readonly IConfiguration _configuration;
         private readonly FileProcessor _fileProcessor;
         private readonly ISignalFileService _signalFiles;
+        private readonly IDriftComparisonService _driftComparison;
         private readonly PolicyDbContext _db;
 
         public PlatformWorkflow(
@@ -30,12 +31,14 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             IConfiguration configuration,
             FileProcessor fileProcessor,
             ISignalFileService signalFiles,
+            IDriftComparisonService driftComparison,
             PolicyDbContext db)
             : base(fileSystem, publisher, driftPath)
         {
             _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
             _fileProcessor = fileProcessor ?? throw new ArgumentNullException(nameof(fileProcessor));
             _signalFiles = signalFiles ?? throw new ArgumentNullException(nameof(signalFiles));
+            _driftComparison = driftComparison ?? throw new ArgumentNullException(nameof(driftComparison));
             _db = db ?? throw new ArgumentNullException(nameof(db));
         }
 
@@ -138,10 +141,13 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
         {
             _publisher.LogInfo($"[PROCESS] Beginning analysis for {policyId}");
 
-            // ── STEP 1: Unzip & Validate Required Files ─────────────────────
-            using (var zipStream = _fileSystem.OpenRead(stagingPath))
+            // ── STEP 1-5: Process within a scoped stream ────────────────────
+            // The stream must be fully disposed before the archive MoveFile,
+            // otherwise the file handle remains locked.
             {
+                using var zipStream = _fileSystem.OpenRead(stagingPath);
 
+                // ── STEP 1: Unzip & Validate Required Files ─────────────────
                 var requiredFiles = new[] { $"{policyId}.xml", $"{policyId}.ini" };
                 var missingFiles = new List<string>();
 
@@ -173,7 +179,6 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
                         Severity = "CRITICAL"
                     });
 
-                    // Kafka: BATCH_PROCESSING_ERROR — invalid ZIP structure
                     await _publisher.PublishStatusEventAsync(policyId, "BATCH_PROCESSING_ERROR", new
                     {
                         Error = $"Required files missing: {missingList}",
@@ -181,6 +186,8 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
                         ExecutionId = ctx.ExecutionId
                     });
 
+                    // Stream disposes here at block end, then move is safe
+                    zipStream.Dispose();
                     var failedArchivePath = Path.Combine(ctx.ProcessedPath, Path.GetFileName(stagingPath));
                     _fileSystem.MoveFile(stagingPath, failedArchivePath);
                     return;
@@ -213,50 +220,74 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
                         // Read the SNOW ticket ID from the signal file before consuming it
                         var snowTicketId = _signalFiles.ReadTicketId(ctx.BaselineFolder, policyId);
 
-                        var (oldVersion, newVersion) = await _db.UpsertBaselineAsync(
-                            policyId, discovery.Attributes, discovery.Hashes, snowTicketId);
+                        // Governance gate: reject promotion if SNOW ticket is required but missing
+                        if (!_driftComparison.IsPromotionAllowed(snowTicketId))
+                        {
+                            _publisher.LogError(
+                                $"[BASELINE] Rejecting promotion for {policyId} — SNOW ticket is required but not provided.",
+                                null);
 
-                        await _db.SavePolicyEventAsync(
-                            policyId: policyId,
-                            eventName: "BaselinePromoted",
-                            eventType: "GOVERNANCE_ACTION",
-                            meta: new
+                            await _db.SavePolicyEventAsync(policyId, "BASELINE_PROMOTION_REJECTED", "CRITICAL", new
+                            {
+                                Reason = "ServiceNow ticket required by Governance:RequireSnowTicket but signal file was empty.",
+                                Severity = "CRITICAL"
+                            });
+
+                            await _publisher.PublishStatusEventAsync(policyId, "BASELINE_PROMOTION_REJECTED", new
+                            {
+                                Reason = "SNOW ticket required but not provided",
+                                ExecutionId = ctx.ExecutionId
+                            });
+
+                            // Do NOT consume the signal file — leave it so they can add the ticket and re-run
+                        }
+                        else
+                        {
+                            var (oldVersion, newVersion) = await _db.UpsertBaselineAsync(
+                                policyId, discovery.Attributes, discovery.Hashes, snowTicketId);
+
+                            await _db.SavePolicyEventAsync(
+                                policyId: policyId,
+                                eventName: "BaselinePromoted",
+                                eventType: "GOVERNANCE_ACTION",
+                                meta: new
+                                {
+                                    OldVersion = oldVersion,
+                                    NewVersion = newVersion,
+                                    AttributeCount = discovery.Attributes.Count,
+                                    Authorizer = "SignalFile",
+                                    SNOWTicket = snowTicketId ?? "NOT_PROVIDED"
+                                });
+
+                            // Kafka: BASELINE_PROMOTED — governance dashboard subscribes
+                            await _publisher.PublishStatusEventAsync(policyId, "BASELINE_PROMOTED", new
                             {
                                 OldVersion = oldVersion,
                                 NewVersion = newVersion,
                                 AttributeCount = discovery.Attributes.Count,
-                                Authorizer = "SignalFile",
-                                SNOWTicket = snowTicketId ?? "NOT_PROVIDED"
+                                SNOWTicket = snowTicketId ?? "NOT_PROVIDED",
+                                ExecutionId = ctx.ExecutionId
                             });
 
-                        // Kafka: BASELINE_PROMOTED — governance dashboard subscribes
-                        await _publisher.PublishStatusEventAsync(policyId, "BASELINE_PROMOTED", new
-                        {
-                            OldVersion = oldVersion,
-                            NewVersion = newVersion,
-                            AttributeCount = discovery.Attributes.Count,
-                            SNOWTicket = snowTicketId ?? "NOT_PROVIDED",
-                            ExecutionId = ctx.ExecutionId
-                        });
-
-                        // Kafka: BASELINE_MISSING_SNOW_TICKET — compliance subscribes
-                        if (string.IsNullOrEmpty(snowTicketId))
-                        {
-                            await _publisher.PublishStatusEventAsync(policyId, "BASELINE_MISSING_SNOW_TICKET", new
+                            // Kafka: BASELINE_MISSING_SNOW_TICKET — compliance subscribes
+                            if (string.IsNullOrEmpty(snowTicketId))
                             {
-                                Version = newVersion,
-                                Message = "Baseline promoted without ServiceNow change authorization.",
-                                ExecutionId = ctx.ExecutionId,
-                                Severity = "WARNING"
-                            });
+                                await _publisher.PublishStatusEventAsync(policyId, "BASELINE_MISSING_SNOW_TICKET", new
+                                {
+                                    Version = newVersion,
+                                    Message = "Baseline promoted without ServiceNow change authorization.",
+                                    ExecutionId = ctx.ExecutionId,
+                                    Severity = "WARNING"
+                                });
+                            }
+
+                            _publisher.LogInfo(
+                                $"[BASELINE] {policyId} promoted: v{oldVersion} → v{newVersion} " +
+                                $"with {discovery.Attributes.Count} attributes. SNOW: {snowTicketId ?? "N/A"}");
+
+                            // Consume the signal file — log and continue if delete fails
+                            _signalFiles.TryDelete(ctx.BaselineFolder, policyId);
                         }
-
-                        _publisher.LogInfo(
-                            $"[BASELINE] {policyId} promoted: v{oldVersion} → v{newVersion} " +
-                            $"with {discovery.Attributes.Count} attributes. SNOW: {snowTicketId ?? "N/A"}");
-
-                        // Consume the signal file — log and continue if delete fails
-                        _signalFiles.TryDelete(ctx.BaselineFolder, policyId);
                     }
                 }
 
@@ -303,7 +334,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
                 }
                 else
                 {
-                    var driftReport = CompareAttributes(baseline.Attributes, discovery.Attributes);
+                    var driftReport = _driftComparison.CompareAttributes(baseline.Attributes, discovery.Attributes);
                     bool hasDrift = driftReport.Count > 0;
 
                     var eval = new PolicyDriftEval
@@ -343,12 +374,13 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
                         });
                         _publisher.LogInfo($"[CLEAN] {policyId} is in sync with the Gold Standard.");
                     }
-                }
+                } // zipStream disposed here — file handle released
+
+                // ── STEP 6: Archive — move from processing → processed ──────────
+                var finalArchivePath = Path.Combine(ctx.ProcessedPath, Path.GetFileName(stagingPath));
+                _fileSystem.MoveFile(stagingPath, finalArchivePath);
+                _publisher.LogInfo($"[ARCHIVE] {policyId}.zip moved to processed.");
             }
-            // ── STEP 6: Archive — move from processing → processed ──────────
-            var finalArchivePath = Path.Combine(ctx.ProcessedPath, Path.GetFileName(stagingPath));
-            _fileSystem.MoveFile(stagingPath, finalArchivePath);
-            _publisher.LogInfo($"[ARCHIVE] {policyId}.zip moved to processed.");
         }
 
         // ═══════════════════════════════════════════════════════════════════
@@ -424,12 +456,23 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
                 driftSections, noDriftResults);
 
             var recipients = _configuration["Reporting:EmailRecipients"] ?? "unity-governance@company.com";
-            await _publisher.SendEmailAsync(
-                to: recipients,
-                subject: $"Unity Policy Drift Report — Batch {executionId[..8]} | {DateTime.UtcNow:yyyy-MM-dd}",
-                htmlBody: html);
+            try
+            {
+                await _publisher.SendEmailAsync(
+                    to: recipients,
+                    subject: $"Unity Policy Drift Report — Batch {executionId[..8]} | {DateTime.UtcNow:yyyy-MM-dd}",
+                    htmlBody: html);
 
-            _publisher.LogInfo($"[REPORT] Governance report emailed to {recipients}.");
+                _publisher.LogInfo($"[REPORT] Governance report emailed to {recipients}.");
+            }
+            catch (NotImplementedException)
+            {
+                _publisher.LogWarning($"[REPORT] Email delivery not yet implemented. Report generated but not sent to {recipients}.");
+            }
+            catch (Exception ex)
+            {
+                _publisher.LogError($"[REPORT] Failed to send governance report email to {recipients}.", ex);
+            }
 
             // ── SQL Event: summary record ────────────────────────────
             await _db.SavePolicyEventAsync("BATCH", "BATCH_REPORT_GENERATED", "INFO", new
@@ -634,44 +677,14 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
         }
 
         // ═══════════════════════════════════════════════════════════════════
-        //  COMPARISON LOGIC
+        //  COMPARISON LOGIC — delegates to shared IDriftComparisonService
         // ═══════════════════════════════════════════════════════════════════
 
         public Dictionary<string, string> CompareAttributes(
             Dictionary<string, string> baseline,
             Dictionary<string, string> current)
         {
-            var changes = new Dictionary<string, string>();
-
-            // TODO: Feature Link - Replace this HashSet with a DB call to 'unity.IgnoreAttributes'
-            var ignoreList = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            {
-                "INI:ApiVersion",
-                "FILE_SIZE_placeholder.txt",
-                "XML:LastModified"
-            };
-
-            // Check for Modified or Removed
-            foreach (var baseKvp in baseline)
-            {
-                if (ignoreList.Contains(baseKvp.Key)) continue;
-
-                if (!current.ContainsKey(baseKvp.Key))
-                    changes[baseKvp.Key] = $"REMOVED (Was: {baseKvp.Value})";
-                else if (current[baseKvp.Key] != baseKvp.Value)
-                    changes[baseKvp.Key] = $"MODIFIED (Base: {baseKvp.Value} | Current: {current[baseKvp.Key]})";
-            }
-
-            // Check for Added
-            foreach (var curKvp in current)
-            {
-                if (ignoreList.Contains(curKvp.Key)) continue;
-
-                if (!baseline.ContainsKey(curKvp.Key))
-                    changes[curKvp.Key] = $"ADDED (New Value: {curKvp.Value})";
-            }
-
-            return changes;
+            return _driftComparison.CompareAttributes(baseline, current);
         }
 
         // ═══════════════════════════════════════════════════════════════════

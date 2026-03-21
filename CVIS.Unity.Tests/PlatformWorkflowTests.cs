@@ -1,6 +1,7 @@
 ﻿using CVIS.Unity.Core.Entities;
 using CVIS.Unity.Core.Interfaces;
 using CVIS.Unity.Infrastructure.Data;
+using CVIS.Unity.Infrastructure.Services;
 using CVIS.Unity.PolicyDrift.Orchestration.Services;
 using CVIS.Unity.PolicyDrift.Orchestrator.Workflows;
 using Microsoft.EntityFrameworkCore;
@@ -27,13 +28,18 @@ namespace CVIS.Unity.Tests
                 .Options;
             _dbContext = new PolicyDbContext(options);
 
+            var config = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>())
+                .Build();
+
             _workflow = new PlatformWorkflow(
                 new Mock<IFileSystemService>().Object,
                 _publisher.Object,
                 new Mock<IPolicyDriftPathProvider>().Object,
-                new Mock<IConfiguration>().Object,
+                config,
                 new Mock<FileProcessor>().Object,
                 new Mock<ISignalFileService>().Object,
+                new DriftComparisonService(config, _publisher.Object),
                 _dbContext);
         }
 

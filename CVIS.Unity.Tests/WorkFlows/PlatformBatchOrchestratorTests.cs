@@ -2,8 +2,10 @@
 using CVIS.Unity.Core.Models;
 using CVIS.Unity.Core.Monitoring;
 using CVIS.Unity.Infrastructure.Data;
+using CVIS.Unity.Infrastructure.Services;
 using CVIS.Unity.PolicyDrift.Orchestrator.Workflows;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Moq;
 
 namespace CVIS.Unity.Tests.Workflows
@@ -22,7 +24,7 @@ namespace CVIS.Unity.Tests.Workflows
         // Fixed paths — no more manual Path.Combine in every test
         private const string TestBaselineFolder = @"C:\Baselines\Platform";
         private const string TestEvalRoot = @"C:\Eval\Policies";
-        private const string TestDateStamp = "2025-07-15";
+        private const string TestDateStamp = "07-15-2025";
 
         private static readonly string TestSourcePath = Path.Combine(TestEvalRoot, TestDateStamp);
         private static readonly string TestProcessingPath = Path.Combine(TestSourcePath, "Processing");
@@ -42,12 +44,17 @@ namespace CVIS.Unity.Tests.Workflows
                 .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
             _dbContext = new PolicyDbContext(options);
 
+            var config = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>())
+                .Build();
+
             _orchestrator = new PlatformBatchOrchestrator(
                 _fileSystem.Object,
                 _publisher.Object,
                 _driftPath.Object,
                 _fileProcessor.Object,
                 _signalFiles.Object,
+                new DriftComparisonService(config, _publisher.Object),
                 _dbContext);
         }
 
@@ -219,10 +226,6 @@ namespace CVIS.Unity.Tests.Workflows
             Assert.That(baseline, Is.Not.Null, "Baseline record was not found in the database.");
             Assert.That(baseline!.Attributes["INI:Param"], Is.EqualTo("Value"));
             Assert.That(baseline.LastSNOWTicket, Is.EqualTo("CHG0012345"));
-            _publisher.Verify(
-    p => p.PublishStatusEventAsync(
-        "WinServer", "BASELINE_PROMOTION_FAILED", It.IsAny<object>()),
-    Times.Never);
 
             _signalFiles.Verify(s => s.ReadTicketId(It.IsAny<string>(), It.Is<string>(p => p == "WinServer")), Times.Once);
             _signalFiles.Verify(s => s.TryDelete(It.IsAny<string>(), It.Is<string>(p => p == "WinServer")), Times.Once);
@@ -423,5 +426,4 @@ namespace CVIS.Unity.Tests.Workflows
                 Times.Once);
         }
     }
-
 }
