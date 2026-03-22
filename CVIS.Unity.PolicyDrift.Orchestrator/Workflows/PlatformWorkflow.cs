@@ -86,6 +86,16 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             _publisher.LogInfo($"[WORKFLOW] Found {zips.Length} ZIP(s) to process.");
 
             // ── 5. Process Each ZIP ──────────────────────────────────
+            await ProcessEachZip(ctx, zips);
+
+            // ── 6. Batch Report ──────────────────────────────────────
+            await GenerateBatchReport(ctx.ExecutionId);
+
+            _publisher.LogInfo($"[WORKFLOW] Execution {ctx.ExecutionId} complete. All ZIPs processed.");
+        }
+
+        private async Task ProcessEachZip(PolicyDriftContext ctx, string[] zips)
+        {
             foreach (var zipPath in zips)
             {
                 var fileName = Path.GetFileName(zipPath);
@@ -123,11 +133,6 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
                     continue;
                 }
             }
-
-            // ── 6. Batch Report ──────────────────────────────────────
-            await GenerateBatchReport(ctx.ExecutionId);
-
-            _publisher.LogInfo($"[WORKFLOW] Execution {ctx.ExecutionId} complete. All ZIPs processed.");
         }
 
         // ═══════════════════════════════════════════════════════════════════
@@ -141,246 +146,309 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
         {
             _publisher.LogInfo($"[PROCESS] Beginning analysis for {policyId}");
 
-            // ── STEP 1-5: Process within a scoped stream ────────────────────
-            // The stream must be fully disposed before the archive MoveFile,
-            // otherwise the file handle remains locked.
+            // Steps 1-5 run inside a scoped stream so the file handle releases before archive
+            DiscoveryResult? discovery = null;
+            bool validationFailed = false;
+
+            using (var zipStream = _fileSystem.OpenRead(stagingPath))
             {
-                using var zipStream = _fileSystem.OpenRead(stagingPath);
-
-                // ── STEP 1: Unzip & Validate Required Files ─────────────────
-                var requiredFiles = new[] { $"{policyId}.xml", $"{policyId}.ini" };
-                var missingFiles = new List<string>();
-
-                using (var inspectionArchive = new ZipArchive(zipStream, ZipArchiveMode.Read, leaveOpen: true))
+                // STEP 1: Validate
+                var missingFiles = ValidateZipContents(zipStream, policyId);
+                if (missingFiles.Count > 0)
                 {
-                    var entryNames = inspectionArchive.Entries
-                        .Select(e => e.Name)
-                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-                    foreach (var required in requiredFiles)
-                    {
-                        if (!entryNames.Contains(required))
-                            missingFiles.Add(required);
-                    }
-                }
-
-                if (missingFiles.Any())
-                {
-                    var missingList = string.Join(", ", missingFiles);
-                    _publisher.LogError(
-                        $"[VALIDATION] {policyId}.zip is missing required files: {missingList}. Skipping.", null);
-
-                    await _db.SavePolicyEventAsync(policyId, "POLICY_ZIP_INVALID", "CRITICAL", new
-                    {
-                        Message = $"Required files missing from ZIP: {missingList}",
-                        ExpectedFiles = string.Join(", ", requiredFiles),
-                        MissingFiles = missingList,
-                        ZipPath = stagingPath,
-                        Severity = "CRITICAL"
-                    });
-
-                    await _publisher.PublishStatusEventAsync(policyId, "BATCH_PROCESSING_ERROR", new
-                    {
-                        Error = $"Required files missing: {missingList}",
-                        Stage = "ZIP_VALIDATION",
-                        ExecutionId = ctx.ExecutionId
-                    });
-
-                    // Stream disposes here at block end, then move is safe
-                    zipStream.Dispose();
-                    var failedArchivePath = Path.Combine(ctx.ProcessedPath, Path.GetFileName(stagingPath));
-                    _fileSystem.MoveFile(stagingPath, failedArchivePath);
-                    return;
-                }
-
-                zipStream.Position = 0;
-
-                // ── STEP 2: Parse the validated ZIP ─────────────────────────────
-                var discovery = await _fileProcessor.ExtractAndParseZipWithHashesAsync(zipStream, policyId);
-
-                // ── STEP 3: Signal Check — Baseline Promotion ───────────────────
-                if (_signalFiles.Exists(ctx.BaselineFolder, policyId))
-                {
-                    _publisher.LogInfo($"[PATH-B] Signal file detected for {policyId}. Promoting baseline...");
-
-                    if (discovery.Attributes == null || !discovery.Attributes.Any())
-                    {
-                        _publisher.LogError(
-                            $"[BASELINE] Refusing to promote empty attributes for {policyId}. Possible ZIP parse failure.",
-                            null);
-
-                        await _db.SavePolicyEventAsync(policyId, "BASELINE_PROMOTION_FAILED", "CRITICAL", new
-                        {
-                            Reason = "Empty attributes returned from FileProcessor",
-                            Severity = "CRITICAL"
-                        });
-                    }
-                    else
-                    {
-                        // Read the SNOW ticket ID from the signal file before consuming it
-                        var snowTicketId = _signalFiles.ReadTicketId(ctx.BaselineFolder, policyId);
-
-                        // Governance gate: reject promotion if SNOW ticket is required but missing
-                        if (!_driftComparison.IsPromotionAllowed(snowTicketId))
-                        {
-                            _publisher.LogError(
-                                $"[BASELINE] Rejecting promotion for {policyId} — SNOW ticket is required but not provided.",
-                                null);
-
-                            await _db.SavePolicyEventAsync(policyId, "BASELINE_PROMOTION_REJECTED", "CRITICAL", new
-                            {
-                                Reason = "ServiceNow ticket required by Governance:RequireSnowTicket but signal file was empty.",
-                                Severity = "CRITICAL"
-                            });
-
-                            await _publisher.PublishStatusEventAsync(policyId, "BASELINE_PROMOTION_REJECTED", new
-                            {
-                                Reason = "SNOW ticket required but not provided",
-                                ExecutionId = ctx.ExecutionId
-                            });
-
-                            // Do NOT consume the signal file — leave it so they can add the ticket and re-run
-                        }
-                        else
-                        {
-                            var (oldVersion, newVersion) = await _db.UpsertBaselineAsync(
-                                policyId, discovery.Attributes, discovery.Hashes, snowTicketId);
-
-                            await _db.SavePolicyEventAsync(
-                                policyId: policyId,
-                                eventName: "BaselinePromoted",
-                                eventType: "GOVERNANCE_ACTION",
-                                meta: new
-                                {
-                                    OldVersion = oldVersion,
-                                    NewVersion = newVersion,
-                                    AttributeCount = discovery.Attributes.Count,
-                                    Authorizer = "SignalFile",
-                                    SNOWTicket = snowTicketId ?? "NOT_PROVIDED"
-                                });
-
-                            // Kafka: BASELINE_PROMOTED — governance dashboard subscribes
-                            await _publisher.PublishStatusEventAsync(policyId, "BASELINE_PROMOTED", new
-                            {
-                                OldVersion = oldVersion,
-                                NewVersion = newVersion,
-                                AttributeCount = discovery.Attributes.Count,
-                                SNOWTicket = snowTicketId ?? "NOT_PROVIDED",
-                                ExecutionId = ctx.ExecutionId
-                            });
-
-                            // Kafka: BASELINE_MISSING_SNOW_TICKET — compliance subscribes
-                            if (string.IsNullOrEmpty(snowTicketId))
-                            {
-                                await _publisher.PublishStatusEventAsync(policyId, "BASELINE_MISSING_SNOW_TICKET", new
-                                {
-                                    Version = newVersion,
-                                    Message = "Baseline promoted without ServiceNow change authorization.",
-                                    ExecutionId = ctx.ExecutionId,
-                                    Severity = "WARNING"
-                                });
-                            }
-
-                            _publisher.LogInfo(
-                                $"[BASELINE] {policyId} promoted: v{oldVersion} → v{newVersion} " +
-                                $"with {discovery.Attributes.Count} attributes. SNOW: {snowTicketId ?? "N/A"}");
-
-                            // Consume the signal file — log and continue if delete fails
-                            _signalFiles.TryDelete(ctx.BaselineFolder, policyId);
-                        }
-                    }
-                }
-
-                // ── STEP 4: Detail Deduplication (FK Resolution) ────────────────
-                var detailId = await _db.GetOrCreatePolicyDetailIdAsync(
-                    policyId, discovery.Attributes, discovery.Hashes);
-
-                // ── STEP 5: Fetch active baseline and evaluate ──────────────────
-                var baseline = await _db.PlatformBaselines
-                    .AsNoTracking()
-                    .FirstOrDefaultAsync(b => b.PlatformId == policyId && b.IsActive);
-
-                if (baseline == null)
-                {
-                    var missingEval = new PolicyDriftEval
-                    {
-                        Id = Guid.NewGuid(),
-                        PolicyId = policyId,
-                        BaselinePolicyID = Guid.Empty,
-                        PolicyDriftEvalDetailsID = detailId,
-                        Status = "MISSING_BASELINE",
-                        RunTimestamp = DateTime.UtcNow,
-                        ExecutionId = ctx.ExecutionId
-                    };
-
-                    await _db.LogDriftEvalAsync(missingEval);
-
-                    await _db.SavePolicyEventAsync(policyId, "ORPHAN_POLICY_BASELINE_DETECTED", "CRITICAL", new
-                    {
-                        Message = "Platform discovered in Vault but no Baseline exists in Unity SQL.",
-                        DetailId = detailId
-                    });
-
-                    // Kafka: POLICY_MISSING_BASELINE — provisioning/ticketing subscribes
-                    await _publisher.PublishStatusEventAsync(policyId, "POLICY_MISSING_BASELINE", new
-                    {
-                        DetailId = detailId,
-                        Message = "No active baseline exists. Signal file required.",
-                        ExecutionId = ctx.ExecutionId
-                    });
-
-                    _publisher.LogWarning(
-                        $"[ORPHAN] Recorded MISSING_BASELINE for {policyId}. Create a signal file to resolve.");
+                    await HandleValidationFailure(policyId, stagingPath, missingFiles, ctx);
+                    validationFailed = true;
                 }
                 else
                 {
-                    var driftReport = _driftComparison.CompareAttributes(baseline.Attributes, discovery.Attributes);
-                    bool hasDrift = driftReport.Count > 0;
+                    zipStream.Position = 0;
 
-                    var eval = new PolicyDriftEval
-                    {
-                        Id = Guid.NewGuid(),
-                        PolicyId = policyId,
-                        BaselinePolicyID = baseline.Id,
-                        PolicyDriftEvalDetailsID = detailId,
-                        Differences = hasDrift ? driftReport : null,
-                        Status = hasDrift ? "DRIFT" : "NO_DRIFT",
-                        RunTimestamp = DateTime.UtcNow,
-                        ExecutionId = ctx.ExecutionId
-                    };
+                    // STEP 2: Parse
+                    discovery = await _fileProcessor.ExtractAndParseZipWithHashesAsync(zipStream, policyId);
 
-                    await _db.LogDriftEvalAsync(eval);
+                    // STEP 3: Signal Check — Baseline Promotion
+                    await HandleSignalFileCheck(policyId, discovery, ctx);
 
-                    if (hasDrift)
-                    {
-                        await _db.SavePolicyEventAsync(policyId, "POLICY_DRIFT_DETECTED", "CRITICAL", new
-                        {
-                            Message = "A Policy Drift has been discovered showing differences against the baseline.",
-                            DetailId = detailId,
-                            DriftCount = driftReport.Count
-                        });
+                    // STEP 4-5: Detail Dedup + Eval
+                    await ExecuteEvaluation(policyId, discovery, ctx);
+                }
+            } // zipStream disposed — file handle released
 
-                        // Kafka: POLICY_DRIFT_DETECTED — security operations subscribes
-                        await _publisher.PublishKafkaDriftAsync(policyId, driftReport, baseline.Attributes);
-
-                        _publisher.LogWarning($"[DRIFT] Differences found for {policyId}. Check the audit dashboard.");
-                    }
-                    else
-                    {
-                        await _db.SavePolicyEventAsync(policyId, "POLICY_NO_DRIFT", "INFO", new
-                        {
-                            Message = "No Policy Drift has been detected when compared against the baseline.",
-                            DetailId = detailId
-                        });
-                        _publisher.LogInfo($"[CLEAN] {policyId} is in sync with the Gold Standard.");
-                    }
-                } // zipStream disposed here — file handle released
-
-                // ── STEP 6: Archive — move from processing → processed ──────────
+            // STEP 6: Archive (stream is closed, MoveFile won't hit file lock)
+            if (validationFailed)
+            {
+                var failedArchivePath = Path.Combine(ctx.ProcessedPath, Path.GetFileName(stagingPath));
+                _fileSystem.MoveFile(stagingPath, failedArchivePath);
+            }
+            else
+            {
                 var finalArchivePath = Path.Combine(ctx.ProcessedPath, Path.GetFileName(stagingPath));
                 _fileSystem.MoveFile(stagingPath, finalArchivePath);
                 _publisher.LogInfo($"[ARCHIVE] {policyId}.zip moved to processed.");
             }
+        }
+
+        // ─────────────────────────────────────────────────────────
+        //  Step 1: ZIP Validation
+        // ─────────────────────────────────────────────────────────
+
+        private List<string> ValidateZipContents(Stream zipStream, string policyId)
+        {
+            var requiredFiles = new[] { $"{policyId}.xml", $"{policyId}.ini" };
+            var missingFiles = new List<string>();
+
+            using (var inspectionArchive = new ZipArchive(zipStream, ZipArchiveMode.Read, leaveOpen: true))
+            {
+                var entryNames = inspectionArchive.Entries
+                    .Select(e => e.Name)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var required in requiredFiles)
+                {
+                    if (!entryNames.Contains(required))
+                        missingFiles.Add(required);
+                }
+            }
+
+            return missingFiles;
+        }
+
+        private async Task HandleValidationFailure(
+            string policyId, string stagingPath, List<string> missingFiles, PolicyDriftContext ctx)
+        {
+            var missingList = string.Join(", ", missingFiles);
+            _publisher.LogError(
+                $"[VALIDATION] {policyId}.zip is missing required files: {missingList}. Skipping.", null);
+
+            await _db.SavePolicyEventAsync(policyId, "POLICY_ZIP_INVALID", "CRITICAL", new
+            {
+                Message = $"Required files missing from ZIP: {missingList}",
+                ExpectedFiles = $"{policyId}.xml, {policyId}.ini",
+                MissingFiles = missingList,
+                ZipPath = stagingPath,
+                Severity = "CRITICAL"
+            });
+
+            await _publisher.PublishStatusEventAsync(policyId, "BATCH_PROCESSING_ERROR", new
+            {
+                Error = $"Required files missing: {missingList}",
+                Stage = "ZIP_VALIDATION",
+                ExecutionId = ctx.ExecutionId
+            });
+        }
+
+        // ─────────────────────────────────────────────────────────
+        //  Step 3: Signal File Check + Baseline Promotion
+        // ─────────────────────────────────────────────────────────
+
+        private async Task HandleSignalFileCheck(
+            string policyId, DiscoveryResult discovery, PolicyDriftContext ctx)
+        {
+            if (!_signalFiles.Exists(ctx.BaselineFolder, policyId))
+                return;
+
+            _publisher.LogInfo($"[PATH-B] Signal file detected for {policyId}. Promoting baseline...");
+            bool flowControl = await HandleAndValidatePossibleFailedAttributes(policyId, discovery);
+
+            if (!flowControl)
+            {
+                return;
+            }
+
+            var snowTicketId = _signalFiles.ReadTicketId(ctx.BaselineFolder, policyId);
+            flowControl = await HandlePromotionOfBaseline(policyId, ctx, snowTicketId);
+
+            if (!flowControl)
+            {
+                return;
+            }
+
+            var (oldVersion, newVersion) = await _db.UpsertBaselineAsync(
+                policyId, discovery.Attributes, discovery.Hashes, snowTicketId);
+
+            await _db.SavePolicyEventAsync(
+                policyId: policyId,
+                eventName: "BaselinePromoted",
+                eventType: "GOVERNANCE_ACTION",
+                meta: new
+                {
+                    OldVersion = oldVersion,
+                    NewVersion = newVersion,
+                    AttributeCount = discovery.Attributes.Count,
+                    Authorizer = "SignalFile",
+                    SNOWTicket = snowTicketId ?? "NOT_PROVIDED"
+                });
+
+            await KafkaBaselinePromotedEvent(policyId, discovery, ctx, snowTicketId, oldVersion, newVersion);
+
+            if (string.IsNullOrEmpty(snowTicketId))
+            {
+                await _publisher.PublishStatusEventAsync(policyId, "BASELINE_MISSING_SNOW_TICKET", new
+                {
+                    Version = newVersion,
+                    Message = "Baseline promoted without ServiceNow change authorization.",
+                    ExecutionId = ctx.ExecutionId,
+                    Severity = "WARNING"
+                });
+            }
+
+            _publisher.LogInfo(
+                $"[BASELINE] {policyId} promoted: v{oldVersion} → v{newVersion} " +
+                $"with {discovery.Attributes.Count} attributes. SNOW: {snowTicketId ?? "N/A"}");
+
+            _signalFiles.TryDelete(ctx.BaselineFolder, policyId);
+        }
+
+        private async Task KafkaBaselinePromotedEvent(string policyId, DiscoveryResult discovery, PolicyDriftContext ctx, string? snowTicketId, int oldVersion, int newVersion)
+        {
+            await _publisher.PublishStatusEventAsync(policyId, "BASELINE_PROMOTED", new
+            {
+                OldVersion = oldVersion,
+                NewVersion = newVersion,
+                AttributeCount = discovery.Attributes.Count,
+                SNOWTicket = snowTicketId ?? "NOT_PROVIDED",
+                ExecutionId = ctx.ExecutionId
+            });
+        }
+
+        private async Task<bool> HandlePromotionOfBaseline(string policyId, PolicyDriftContext ctx, string? snowTicketId)
+        {
+            if (!_driftComparison.IsPromotionAllowed(snowTicketId))
+            {
+                _publisher.LogError(
+                    $"[BASELINE] Rejecting promotion for {policyId} — SNOW ticket is required but not provided.",
+                    null);
+
+                await _db.SavePolicyEventAsync(policyId, "BASELINE_PROMOTION_REJECTED", "CRITICAL", new
+                {
+                    Reason = "ServiceNow ticket required by Governance:RequireSnowTicket but signal file was empty.",
+                    Severity = "CRITICAL"
+                });
+
+                await _publisher.PublishStatusEventAsync(policyId, "BASELINE_PROMOTION_REJECTED", new
+                {
+                    Reason = "SNOW ticket required but not provided",
+                    ExecutionId = ctx.ExecutionId
+                });
+                return false; // Do NOT consume the signal file
+            }
+
+            return true;
+        }
+
+        private async Task<bool> HandleAndValidatePossibleFailedAttributes(string policyId, DiscoveryResult discovery)
+        {
+            if (discovery.Attributes == null || !discovery.Attributes.Any())
+            {
+                _publisher.LogError(
+                    $"[BASELINE] Refusing to promote empty attributes for {policyId}. Possible ZIP parse failure.",
+                    null);
+
+                await _db.SavePolicyEventAsync(policyId, "BASELINE_PROMOTION_FAILED", "CRITICAL", new
+                {
+                    Reason = "Empty attributes returned from FileProcessor",
+                    Severity = "CRITICAL"
+                });
+                return false;
+            }
+
+            return true;
+        }
+
+        // ─────────────────────────────────────────────────────────
+        //  Steps 4-5: Detail Dedup + Drift Evaluation
+        // ─────────────────────────────────────────────────────────
+
+        private async Task ExecuteEvaluation(
+            string policyId, DiscoveryResult discovery, PolicyDriftContext ctx)
+        {
+            var detailId = await _db.GetOrCreatePolicyDetailIdAsync(
+                policyId, discovery.Attributes, discovery.Hashes);
+
+            var baseline = await _db.PlatformBaselines
+                .AsNoTracking()
+                .FirstOrDefaultAsync(b => b.PlatformId == policyId && b.IsActive);
+
+            if (baseline == null)
+            {
+                await RecordMissingBaseline(policyId, detailId, ctx);
+                return;
+            }
+
+            var driftReport = _driftComparison.CompareAttributes(baseline.Attributes, discovery.Attributes);
+            bool hasDrift = driftReport.Count > 0;
+
+            var eval = new PolicyDriftEval
+            {
+                Id = Guid.NewGuid(),
+                PolicyId = policyId,
+                BaselinePolicyID = baseline.Id,
+                PolicyDriftEvalDetailsID = detailId,
+                Differences = hasDrift ? driftReport : null,
+                Status = hasDrift ? "DRIFT" : "NO_DRIFT",
+                RunTimestamp = DateTime.UtcNow,
+                ExecutionId = ctx.ExecutionId
+            };
+
+            await _db.LogDriftEvalAsync(eval);
+            await SaveDriftStateDB(policyId, detailId, baseline, driftReport, hasDrift);
+        }
+
+        private async Task SaveDriftStateDB(string policyId, Guid detailId, PlatformBaseline baseline, Dictionary<string, string> driftReport, bool hasDrift)
+        {
+            if (hasDrift)
+            {
+                await _db.SavePolicyEventAsync(policyId, "POLICY_DRIFT_DETECTED", "CRITICAL", new
+                {
+                    Message = "A Policy Drift has been discovered showing differences against the baseline.",
+                    DetailId = detailId,
+                    DriftCount = driftReport.Count
+                });
+
+                await _publisher.PublishKafkaDriftAsync(policyId, driftReport, baseline.Attributes);
+                _publisher.LogWarning($"[DRIFT] Differences found for {policyId}. Check the audit dashboard.");
+            }
+            else
+            {
+                await _db.SavePolicyEventAsync(policyId, "POLICY_NO_DRIFT", "INFO", new
+                {
+                    Message = "No Policy Drift has been detected when compared against the baseline.",
+                    DetailId = detailId
+                });
+                _publisher.LogInfo($"[CLEAN] {policyId} is in sync with the Gold Standard.");
+            }
+        }
+
+        private async Task RecordMissingBaseline(string policyId, Guid detailId, PolicyDriftContext ctx)
+        {
+            var missingEval = new PolicyDriftEval
+            {
+                Id = Guid.NewGuid(),
+                PolicyId = policyId,
+                BaselinePolicyID = Guid.Empty,
+                PolicyDriftEvalDetailsID = detailId,
+                Status = "MISSING_BASELINE",
+                RunTimestamp = DateTime.UtcNow,
+                ExecutionId = ctx.ExecutionId
+            };
+
+            await _db.LogDriftEvalAsync(missingEval);
+
+            await _db.SavePolicyEventAsync(policyId, "ORPHAN_POLICY_BASELINE_DETECTED", "CRITICAL", new
+            {
+                Message = "Platform discovered in Vault but no Baseline exists in Unity SQL.",
+                DetailId = detailId
+            });
+
+            await _publisher.PublishStatusEventAsync(policyId, "POLICY_MISSING_BASELINE", new
+            {
+                DetailId = detailId,
+                Message = "No active baseline exists. Signal file required.",
+                ExecutionId = ctx.ExecutionId
+            });
+
+            _publisher.LogWarning(
+                $"[ORPHAN] Recorded MISSING_BASELINE for {policyId}. Create a signal file to resolve.");
         }
 
         // ═══════════════════════════════════════════════════════════════════
@@ -456,6 +524,28 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
                 driftSections, noDriftResults);
 
             var recipients = _configuration["Reporting:EmailRecipients"] ?? "unity-governance@company.com";
+            await SendEmail(executionId, html, recipients);
+
+            // ── SQL Event: summary record ────────────────────────────
+            await _db.SavePolicyEventAsync("BATCH", "BATCH_REPORT_GENERATED", "INFO", new
+            {
+                ExecutionId = executionId,
+                TotalProcessed = total,
+                NoDrift = noDriftResults.Count,
+                DriftCount = driftResults.Count,
+                MissingBaseline = missingResults.Count,
+                BaselinePromotions = promotions.Count,
+                Timestamp = DateTime.UtcNow
+            });
+
+            // ── Kafka: BATCH_GOVERNANCE_REPORT ───────────────────────
+            // Full structured report — dashboard app subscribes and renders.
+            // Contains everything a downstream consumer needs without parsing HTML.
+            await KafkaBatchGovernanceReport(executionId, total, noDriftResults, driftResults, missingResults, driftSections, promotions);
+        }
+
+        private async Task SendEmail(string executionId, string html, string recipients)
+        {
             try
             {
                 await _publisher.SendEmailAsync(
@@ -473,22 +563,10 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             {
                 _publisher.LogError($"[REPORT] Failed to send governance report email to {recipients}.", ex);
             }
+        }
 
-            // ── SQL Event: summary record ────────────────────────────
-            await _db.SavePolicyEventAsync("BATCH", "BATCH_REPORT_GENERATED", "INFO", new
-            {
-                ExecutionId = executionId,
-                TotalProcessed = total,
-                NoDrift = noDriftResults.Count,
-                DriftCount = driftResults.Count,
-                MissingBaseline = missingResults.Count,
-                BaselinePromotions = promotions.Count,
-                Timestamp = DateTime.UtcNow
-            });
-
-            // ── Kafka: BATCH_GOVERNANCE_REPORT ───────────────────────
-            // Full structured report — dashboard app subscribes and renders.
-            // Contains everything a downstream consumer needs without parsing HTML.
+        private async Task KafkaBatchGovernanceReport(string executionId, int total, List<PolicyDriftEval> noDriftResults, List<PolicyDriftEval> driftResults, List<PolicyDriftEval> missingResults, List<DriftReportEntry> driftSections, List<BaselinePromotionEntry> promotions)
+        {
             await _publisher.PublishStatusEventAsync("BATCH", "BATCH_GOVERNANCE_REPORT", new
             {
                 ExecutionId = executionId,
@@ -571,64 +649,63 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             sb.AppendLine("code { font-family: Consolas, monospace; font-size: 12px; background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }");
             sb.AppendLine(".footer { margin: 24px 0 0; padding: 16px 0 0; border-top: 1px solid #e0e0e0; font-size: 11px; color: #999; }");
             sb.AppendLine("</style></head><body>");
-
-            // ── CORPORATE HEADER ─────────────────────────────────────
-            sb.AppendLine("<div class='brand-bar'><h1>WELLS FARGO</h1></div>");
-            sb.AppendLine("<div class='gold-accent'></div>");
-            sb.AppendLine("<div class='body-wrap'>");
+            CoporateHeader(sb);
 
             // ── ITSM Badge + Date ────────────────────────────────────
-            sb.AppendLine("<div style='display:flex;justify-content:space-between;align-items:flex-start;margin:0 0 20px;'>");
-            sb.AppendLine("<span class='itsm-badge'>CVIS Unity — Policy Drift Governance</span>");
-            sb.AppendLine($"<span style='font-size:13px;color:#666;'>{DateTime.UtcNow:MMMM d, yyyy}</span>");
-            sb.AppendLine("</div>");
+            ItsmBadgeDate(sb);
 
             // ── Greeting ─────────────────────────────────────────────
-            sb.AppendLine("<p style='margin:0 0 6px;font-size:14px;'>Hi CyberArk Platform Team,</p>");
-            sb.AppendLine($"<p style='margin:0 0 20px;font-size:14px;color:#555;'>The following is the automated daily governance report for CyberArk platform policy drift monitoring. This batch evaluated <strong>{total} platforms</strong> against their authorized baselines.</p>");
+            Greeting(total, sb);
 
             // ── SUMMARY CARDS ────────────────────────────────────────
-            sb.AppendLine("<div class='summary-grid'>");
-            sb.AppendLine($"<div class='stat-card card-blue'><div class='number'>{total}</div><div class='label'>Total Processed</div></div>");
-            sb.AppendLine($"<div class='stat-card card-green'><div class='number'>{noDrift.Count}</div><div class='label'>No Drift</div></div>");
-            sb.AppendLine($"<div class='stat-card card-red'><div class='number'>{driftSections.Count}</div><div class='label'>Drift Detected</div></div>");
-            sb.AppendLine($"<div class='stat-card card-amber'><div class='number'>{missingBaseline.Count}</div><div class='label'>Missing Baseline</div></div>");
-            sb.AppendLine("</div>");
+            SummaryCards(total, missingBaseline, driftSections, noDrift, sb);
 
             // ── SECTION 1: BASELINE UPDATES ──────────────────────────
-            if (promotions.Any())
-            {
-                sb.AppendLine("<h2>Baseline updates — promoted this batch</h2>");
-                sb.AppendLine("<table><tr><th>Policy ID</th><th>Version</th><th>Attributes</th><th>SNOW Ticket</th></tr>");
-
-                foreach (var promo in promotions)
-                {
-                    var ticketCell = string.IsNullOrEmpty(promo.SnowTicketId) || promo.SnowTicketId == "NOT_PROVIDED"
-                        ? "<span class='tag-snow-missing'>MISSING</span>"
-                        : $"<code>{promo.SnowTicketId}</code>";
-
-                    sb.AppendLine($"<tr><td>{promo.PolicyId}</td><td>v{promo.OldVersion} → v{promo.NewVersion}</td><td>{promo.AttributeCount}</td><td>{ticketCell}</td></tr>");
-                }
-
-                sb.AppendLine("</table>");
-            }
+            BarelineUpdates(promotions, sb);
 
             // ── SECTION 2: MISSING BASELINE ──────────────────────────
-            if (missingBaseline.Any())
-            {
-                sb.AppendLine("<h2>Missing baseline — orphaned policies</h2>");
-                sb.AppendLine("<p style='font-size:13px;color:#666;margin:0 0 12px;'>The following policies were discovered in the Vault but have no active baseline in Unity SQL. Submit a change request and create a <code>{PolicyId}.txt</code> signal file to establish the initial baseline.</p>");
-                sb.AppendLine("<table><tr><th>Policy ID</th><th>Detail ID</th><th>Discovered At</th></tr>");
+            MissingBaseline(missingBaseline, sb);
 
-                foreach (var orphan in missingBaseline)
+            // ── SECTION 3: DRIFT DETECTED ────────────────────────────
+            DriftDetected(driftSections, sb);
+
+            // ── SECTION 4: CLEAN POLICIES (last) ─────────────────────
+            CleanPolicies(noDrift, sb);
+
+            // ── FOOTER ───────────────────────────────────────────────
+            Footer(executionId, sb);
+
+            return sb.ToString();
+        }
+
+        private static void Footer(string executionId, StringBuilder sb)
+        {
+            sb.AppendLine("<div class='footer'>");
+            sb.AppendLine($"<p style='margin:0 0 4px;'>CVIS Unity PolicyDrift Engine — Execution ID: {executionId}</p>");
+            sb.AppendLine("<p style='margin:0;'>This is an automated report generated by IT Service Management. For questions, contact the CyberArk Platform Engineering team.</p>");
+            sb.AppendLine("</div>");
+
+            sb.AppendLine("</div></body></html>");
+        }
+
+        private static void CleanPolicies(List<PolicyDriftEval> noDrift, StringBuilder sb)
+        {
+            if (noDrift.Any())
+            {
+                sb.AppendLine("<h2>Clean policies — no drift detected</h2>");
+                sb.AppendLine("<table><tr><th>Policy ID</th><th>Status</th><th>Evaluated At</th></tr>");
+
+                foreach (var eval in noDrift)
                 {
-                    sb.AppendLine($"<tr><td><span class='tag-missing'>{orphan.PolicyId}</span></td><td><code>{orphan.PolicyDriftEvalDetailsID}</code></td><td>{orphan.RunTimestamp:yyyy-MM-dd HH:mm}</td></tr>");
+                    sb.AppendLine($"<tr><td>{eval.PolicyId}</td><td><span class='tag-clean'>NO_DRIFT</span></td><td>{eval.RunTimestamp:yyyy-MM-dd HH:mm}</td></tr>");
                 }
 
                 sb.AppendLine("</table>");
             }
+        }
 
-            // ── SECTION 3: DRIFT DETECTED ────────────────────────────
+        private static void DriftDetected(List<DriftReportEntry> driftSections, StringBuilder sb)
+        {
             if (driftSections.Any())
             {
                 sb.AppendLine("<h2>Drift detected — requires attention</h2>");
@@ -650,30 +727,75 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
                     sb.AppendLine("</table>");
                 }
             }
+        }
 
-            // ── SECTION 4: CLEAN POLICIES (last) ─────────────────────
-            if (noDrift.Any())
+        private static void MissingBaseline(List<PolicyDriftEval> missingBaseline, StringBuilder sb)
+        {
+            if (missingBaseline.Any())
             {
-                sb.AppendLine("<h2>Clean policies — no drift detected</h2>");
-                sb.AppendLine("<table><tr><th>Policy ID</th><th>Status</th><th>Evaluated At</th></tr>");
+                sb.AppendLine("<h2>Missing baseline — orphaned policies</h2>");
+                sb.AppendLine("<p style='font-size:13px;color:#666;margin:0 0 12px;'>The following policies were discovered in the Vault but have no active baseline in Unity SQL. Submit a change request and create a <code>{PolicyId}.txt</code> signal file to establish the initial baseline.</p>");
+                sb.AppendLine("<table><tr><th>Policy ID</th><th>Detail ID</th><th>Discovered At</th></tr>");
 
-                foreach (var eval in noDrift)
+                foreach (var orphan in missingBaseline)
                 {
-                    sb.AppendLine($"<tr><td>{eval.PolicyId}</td><td><span class='tag-clean'>NO_DRIFT</span></td><td>{eval.RunTimestamp:yyyy-MM-dd HH:mm}</td></tr>");
+                    sb.AppendLine($"<tr><td><span class='tag-missing'>{orphan.PolicyId}</span></td><td><code>{orphan.PolicyDriftEvalDetailsID}</code></td><td>{orphan.RunTimestamp:yyyy-MM-dd HH:mm}</td></tr>");
                 }
 
                 sb.AppendLine("</table>");
             }
+        }
 
-            // ── FOOTER ───────────────────────────────────────────────
-            sb.AppendLine("<div class='footer'>");
-            sb.AppendLine($"<p style='margin:0 0 4px;'>CVIS Unity PolicyDrift Engine — Execution ID: {executionId}</p>");
-            sb.AppendLine("<p style='margin:0;'>This is an automated report generated by IT Service Management. For questions, contact the CyberArk Platform Engineering team.</p>");
+        private static void BarelineUpdates(List<BaselinePromotionEntry> promotions, StringBuilder sb)
+        {
+            if (promotions.Any())
+            {
+                sb.AppendLine("<h2>Baseline updates — promoted this batch</h2>");
+                sb.AppendLine("<table><tr><th>Policy ID</th><th>Version</th><th>Attributes</th><th>SNOW Ticket</th></tr>");
+
+                foreach (var promo in promotions)
+                {
+                    var ticketCell = string.IsNullOrEmpty(promo.SnowTicketId) || promo.SnowTicketId == "NOT_PROVIDED"
+                        ? "<span class='tag-snow-missing'>MISSING</span>"
+                        : $"<code>{promo.SnowTicketId}</code>";
+
+                    sb.AppendLine($"<tr><td>{promo.PolicyId}</td><td>v{promo.OldVersion} → v{promo.NewVersion}</td><td>{promo.AttributeCount}</td><td>{ticketCell}</td></tr>");
+                }
+
+                sb.AppendLine("</table>");
+            }
+        }
+
+        private static void SummaryCards(int total, List<PolicyDriftEval> missingBaseline, List<DriftReportEntry> driftSections, List<PolicyDriftEval> noDrift, StringBuilder sb)
+        {
+            sb.AppendLine("<div class='summary-grid'>");
+            sb.AppendLine($"<div class='stat-card card-blue'><div class='number'>{total}</div><div class='label'>Total Processed</div></div>");
+            sb.AppendLine($"<div class='stat-card card-green'><div class='number'>{noDrift.Count}</div><div class='label'>No Drift</div></div>");
+            sb.AppendLine($"<div class='stat-card card-red'><div class='number'>{driftSections.Count}</div><div class='label'>Drift Detected</div></div>");
+            sb.AppendLine($"<div class='stat-card card-amber'><div class='number'>{missingBaseline.Count}</div><div class='label'>Missing Baseline</div></div>");
             sb.AppendLine("</div>");
+        }
 
-            sb.AppendLine("</div></body></html>");
+        private static void Greeting(int total, StringBuilder sb)
+        {
+            sb.AppendLine("<p style='margin:0 0 6px;font-size:14px;'>Hi CyberArk Platform Team,</p>");
+            sb.AppendLine($"<p style='margin:0 0 20px;font-size:14px;color:#555;'>The following is the automated daily governance report for CyberArk platform policy drift monitoring. This batch evaluated <strong>{total} platforms</strong> against their authorized baselines.</p>");
+        }
 
-            return sb.ToString();
+        private static void ItsmBadgeDate(StringBuilder sb)
+        {
+            sb.AppendLine("<div style='display:flex;justify-content:space-between;align-items:flex-start;margin:0 0 20px;'>");
+            sb.AppendLine("<span class='itsm-badge'>CVIS Unity — Policy Drift Governance</span>");
+            sb.AppendLine($"<span style='font-size:13px;color:#666;'>{DateTime.UtcNow:MMMM d, yyyy}</span>");
+            sb.AppendLine("</div>");
+        }
+
+        private static void CoporateHeader(StringBuilder sb)
+        {
+            // ── CORPORATE HEADER ─────────────────────────────────────
+            sb.AppendLine("<div class='brand-bar'><h1>WELLS FARGO</h1></div>");
+            sb.AppendLine("<div class='gold-accent'></div>");
+            sb.AppendLine("<div class='body-wrap'>");
         }
 
         // ═══════════════════════════════════════════════════════════════════

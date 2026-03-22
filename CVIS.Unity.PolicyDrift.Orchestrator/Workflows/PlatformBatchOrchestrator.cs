@@ -202,7 +202,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
 
             if (baseline == null)
             {
-                await SaveEvaluation(policyId, discovery, executionId, "MISSING_BASELINE", Guid.Empty);
+                await SaveEvaluation(policyId, executionId, "MISSING_BASELINE", Guid.Empty);
                 return;
             }
 
@@ -219,7 +219,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             var detailId = await _db.GetOrCreatePolicyDetailIdAsync(
                 policyId, discovery.Attributes, discovery.Hashes);
 
-            await SaveEvaluation(policyId, discovery, executionId, status, baseline.Id, detailId, differences);
+            await SaveEvaluation(policyId, executionId, status, baseline.Id, detailId, differences);
 
             if (status == "DRIFT")
             {
@@ -229,7 +229,6 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
 
         private async Task SaveEvaluation(
             string policyId,
-            DiscoveryResult discovery,
             string executionId,
             string status,
             Guid baselineId,
