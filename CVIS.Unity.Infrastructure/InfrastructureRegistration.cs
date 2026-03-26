@@ -19,7 +19,8 @@ namespace CVIS.Unity.Infrastructure
             // 1. Database Context (Scoped) SQL 2018 Connection
             var connectionString = config.GetConnectionString("DefaultConnection");
             services.AddDbContext<PolicyDbContext>(options =>
-                options.UseSqlServer(connectionString));
+                options.UseSqlServer(connectionString, sqlOptions =>
+                    sqlOptions.MigrationsHistoryTable("__EFMigrationsHistory", "unity")));
 
             // 2. The Publisher - Changed to Scoped to fix the DI Lifetime issue
             // Unity Placeholder
@@ -29,10 +30,7 @@ namespace CVIS.Unity.Infrastructure
             services.AddScoped<IUnityEventPublisher, ImmediateUnityPublisher>();
 
             // 3. Core Services
-            
-            // System Services
-            services.AddTransient<IFileSystemService, FileSystemService>();
-            
+
             // Mock CyberArk Vault Service contains, not real API calls,
             // but simulates the expected behavior for testing and development.
             services.AddTransient<ICyberArkVaultService, MockVaultService>();

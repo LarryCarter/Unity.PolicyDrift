@@ -94,8 +94,8 @@ namespace CVIS.Unity.Tests.WorkFlows
             var ms = new MemoryStream();
             using (var a = new ZipArchive(ms, ZipArchiveMode.Create, true))
             {
-                a.CreateEntry($"{policyId}.xml");
-                a.CreateEntry($"{policyId}.ini");
+                a.CreateEntry($"policy-{policyId}.xml");
+                a.CreateEntry($"policy-{policyId}.ini");
             }
             ms.Position = 0;
             return ms;

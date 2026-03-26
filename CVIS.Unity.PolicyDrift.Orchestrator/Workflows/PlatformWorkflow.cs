@@ -194,7 +194,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
 
         private List<string> ValidateZipContents(Stream zipStream, string policyId)
         {
-            var requiredFiles = new[] { $"{policyId}.xml", $"{policyId}.ini" };
+            var requiredFiles = new[] { $"policy-{policyId}.xml", $"policy-{policyId}.ini" };
             var missingFiles = new List<string>();
 
             using (var inspectionArchive = new ZipArchive(zipStream, ZipArchiveMode.Read, leaveOpen: true))
@@ -223,7 +223,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             await _db.SavePolicyEventAsync(policyId, "POLICY_ZIP_INVALID", "CRITICAL", new
             {
                 Message = $"Required files missing from ZIP: {missingList}",
-                ExpectedFiles = $"{policyId}.xml, {policyId}.ini",
+                ExpectedFiles = $"policy-{policyId}.xml, policy-{policyId}.ini",
                 MissingFiles = missingList,
                 ZipPath = stagingPath,
                 Severity = "CRITICAL"

@@ -111,13 +111,6 @@ namespace CVIS.Unity.PolicyDrift.ConsoleHost
                     // Re-throw to trigger the Main catch-block safety net
                     throw;
                 }
-
-                // 2. Launch the workflows
-                var workflows = scope.ServiceProvider.GetServices<IPolicyWorkflow>();
-                foreach (var workflow in workflows)
-                {
-                    await workflow.ExecuteAsync();
-                }
             }
         }
     }
