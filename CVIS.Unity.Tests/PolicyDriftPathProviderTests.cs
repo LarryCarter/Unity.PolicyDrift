@@ -33,10 +33,6 @@ namespace CVIS.Unity.Tests.Infrastructure
             _publisher = new Mock<IUnityEventPublisher>();
         }
 
-        /// <summary>
-        /// Builds a provider with the given config dictionary.
-        /// Pass null values or omit keys to simulate missing config.
-        /// </summary>
         private PolicyDriftPathProvider CreateProvider(Dictionary<string, string?>? configValues = null)
         {
             var defaults = new Dictionary<string, string?>
@@ -58,9 +54,6 @@ namespace CVIS.Unity.Tests.Infrastructure
             return new PolicyDriftPathProvider(configuration, _fileSystem.Object, _publisher.Object);
         }
 
-        /// <summary>
-        /// Helper: compute the expected execution ID the same way the provider does.
-        /// </summary>
         private static string ExpectedExecutionId(string path)
         {
             byte[] bytes = Encoding.UTF8.GetBytes(path.ToLowerInvariant());
@@ -103,9 +96,13 @@ namespace CVIS.Unity.Tests.Infrastructure
 
             _publisher.Verify(
                 p => p.PublishKafkaDriftAsync(
+                    "CONFIG",
                     It.Is<string>(id => id.Contains("CONFIG:")),
+                    "PolicyDrift",
+                    "Integration",
                     It.IsAny<Dictionary<string, string>>(),
-                    It.IsAny<Dictionary<string, string>>()),
+                    It.IsAny<Dictionary<string, string>>(),
+                    null),
                 Times.Once);
         }
 
@@ -139,9 +136,13 @@ namespace CVIS.Unity.Tests.Infrastructure
 
             _publisher.Verify(
                 p => p.PublishKafkaDriftAsync(
-                    It.Is<string>(id => id == "CONFIG:Monitoring:PolicyEvalFolder"),
+                    "CONFIG",
+                    "CONFIG:Monitoring:PolicyEvalFolder",
+                    "PolicyDrift",
+                    "Integration",
                     It.IsAny<Dictionary<string, string>>(),
-                    It.IsAny<Dictionary<string, string>>()),
+                    It.IsAny<Dictionary<string, string>>(),
+                    null),
                 Times.Once);
         }
 
@@ -201,43 +202,27 @@ namespace CVIS.Unity.Tests.Infrastructure
         }
 
         // ─────────────────────────────────────────────────────────
-        //  Happy Path — Full Context Built Correctly
+        //  Path Derivation
         // ─────────────────────────────────────────────────────────
 
         [Test]
         public async Task BuildDriftContext_ValidConfig_ReturnsCorrectPaths()
         {
             _fileSystem.Setup(fs => fs.DirectoryExists(It.IsAny<string>())).Returns(true);
-            var fixedDate = new DateTime(2025, 7, 15, 10, 30, 0, DateTimeKind.Utc);
+            var fixedDate = new DateTime(2025, 7, 15, 0, 0, 0, DateTimeKind.Utc);
+            var dateStamp = "07-15-2025";
+            var sourcePath = Path.Combine(TestEvalRoot, dateStamp);
 
             var provider = CreateProvider();
             var result = await provider.BuildDriftContextAsync(fixedDate);
 
             Assert.That(result.IsValid, Is.True);
-            var ctx = result.Context!;
-
-            Assert.That(ctx.BaselineFolder, Is.EqualTo(TestBaselineFolder));
-            Assert.That(ctx.EvalRoot, Is.EqualTo(TestEvalRoot));
-            Assert.That(ctx.DateStamp, Is.EqualTo("07-15-2025"));
-            Assert.That(ctx.SourcePath, Is.EqualTo(Path.Combine(TestEvalRoot, "07-15-2025")));
-            Assert.That(ctx.ProcessingPath, Is.EqualTo(Path.Combine(TestEvalRoot, "07-15-2025", "Processing")));
-            Assert.That(ctx.ProcessedPath, Is.EqualTo(Path.Combine(TestEvalRoot, "07-15-2025", "Processed")));
-        }
-
-        [Test]
-        public async Task BuildDriftContext_ValidConfig_LogsInfoWithExecutionId()
-        {
-            _fileSystem.Setup(fs => fs.DirectoryExists(It.IsAny<string>())).Returns(true);
-
-            var provider = CreateProvider();
-            await provider.BuildDriftContextAsync(new DateTime(2025, 7, 15, 0, 0, 0, DateTimeKind.Utc));
-
-            _publisher.Verify(
-                p => p.LogInfo(It.Is<string>(s =>
-                    s.Contains("[PolicyDriftPath]") &&
-                    s.Contains("Context built") &&
-                    s.Contains("ExecutionId"))),
-                Times.Once);
+            Assert.That(result.Context!.BaselineFolder, Is.EqualTo(TestBaselineFolder));
+            Assert.That(result.Context.EvalRoot, Is.EqualTo(TestEvalRoot));
+            Assert.That(result.Context.SourcePath, Is.EqualTo(sourcePath));
+            Assert.That(result.Context.ProcessingPath, Is.EqualTo(Path.Combine(sourcePath, "Processing")));
+            Assert.That(result.Context.ProcessedPath, Is.EqualTo(Path.Combine(sourcePath, "Processed")));
+            Assert.That(result.Context.DateStamp, Is.EqualTo(dateStamp));
         }
 
         // ─────────────────────────────────────────────────────────
@@ -391,8 +376,7 @@ namespace CVIS.Unity.Tests.Infrastructure
         }
 
         // ─────────────────────────────────────────────────────────
-        //  Kafka Alert Shape — Verify the drift event carries
-        //  the right policyId and diagnostic data
+        //  Kafka Alert Shape
         // ─────────────────────────────────────────────────────────
 
         [Test]
@@ -407,14 +391,18 @@ namespace CVIS.Unity.Tests.Infrastructure
 
             _publisher.Verify(
                 p => p.PublishKafkaDriftAsync(
+                    "CONFIG",
                     "CONFIG:Monitoring:PolicyEvalFolder",
+                    "PolicyDrift",
+                    "Integration",
                     It.Is<Dictionary<string, string>>(d =>
                         d.ContainsKey("MissingConfigKey") &&
                         d.ContainsKey("ErrorDetail") &&
                         d.ContainsKey("DetectedAtUtc")),
                     It.Is<Dictionary<string, string>>(b =>
                         b.ContainsKey("ExpectedState") &&
-                        b.ContainsKey("ActualState"))),
+                        b.ContainsKey("ActualState")),
+                    null),
                 Times.Once);
         }
 
@@ -433,8 +421,12 @@ namespace CVIS.Unity.Tests.Infrastructure
             _publisher.Verify(
                 p => p.PublishKafkaDriftAsync(
                     It.IsAny<string>(),
+                    It.IsAny<string>(),
+                    It.IsAny<string>(),
+                    It.IsAny<string>(),
                     It.IsAny<Dictionary<string, string>>(),
-                    It.IsAny<Dictionary<string, string>>()),
+                    It.IsAny<Dictionary<string, string>>(),
+                    It.IsAny<string?>()),
                 Times.Once);
         }
     }

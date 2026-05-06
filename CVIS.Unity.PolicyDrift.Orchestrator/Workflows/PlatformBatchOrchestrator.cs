@@ -36,9 +36,6 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
 
         public override string WorkflowName => "CyberArk Platform Batch";
 
-        /// <summary>
-        /// Entry point — overrides base to run the batch pipeline.
-        /// </summary>
         public override async Task ExecuteAsync()
         {
             await RunBatchRefineryAsync();
@@ -47,14 +44,10 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
         public async Task RunBatchRefineryAsync()
         {
             // ── 1. Build Context ─────────────────────────────────────
-            //    Config validation, root folder assurance, path derivation,
-            //    execution ID — all handled by the provider.
-            //    If config is missing, Kafka already fired before this returns.
             var result = await _driftPath.BuildDriftContextAsync();
 
             if (!result.IsValid)
             {
-                // Already logged + Kafka-alerted inside the provider.
                 return;
             }
 
@@ -70,7 +63,6 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             }
 
             // ── 3. Staging ───────────────────────────────────────────
-            //    Only create Processing/Processed now that we know there's work.
             _driftPath.EnsureStagingDirectories(ctx);
 
             // ── 4. Atomic Processing Loop ────────────────────────────
@@ -114,11 +106,9 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
         {
             _publisher.LogInfo($"[PROCESS] Beginning analysis for {policyId}");
 
-            // 1. Memory Extraction & Parsing
             using var zipStream = _fileSystem.OpenRead(stagePath);
             var discovery = await _fileProcessor.ExtractAndParseZipWithHashesAsync(zipStream, policyId);
 
-            // 2. Baseline Gate — signal file check uses the context's baseline folder
             if (_signalFiles.Exists(ctx.BaselineFolder, policyId))
             {
                 var snowTicketId = _signalFiles.ReadTicketId(ctx.BaselineFolder, policyId);
@@ -128,25 +118,29 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
                     _publisher.LogError(
                         $"[BASELINE] Rejecting promotion for {policyId} — SNOW ticket is required but not provided.",
                         null);
-                    await _publisher.PublishStatusEventAsync(policyId, "BASELINE_PROMOTION_REJECTED", new
-                    {
-                        Reason = "SNOW ticket required but not provided",
-                        ExecutionId = ctx.ExecutionId
-                    });
-                    // Do NOT consume the signal file
+
+                    await _publisher.PublishStatusEventAsync(
+                        entityType: "POLICY",
+                        entityId: policyId,
+                        domain: "PolicyDrift",
+                        subDomain: "Baseline",
+                        status: "BASELINE_PROMOTION_REJECTED",
+                        metadata: new
+                        {
+                            Reason = "SNOW ticket required but not provided",
+                            ExecutionId = ctx.ExecutionId
+                        });
                 }
                 else
                 {
-                    await HandleBaselinePromotion(policyId, discovery, snowTicketId);
+                    await HandleBaselinePromotion(policyId, discovery, snowTicketId, ctx.ExecutionId);
                     _signalFiles.TryDelete(ctx.BaselineFolder, policyId);
                     _publisher.LogInfo($"[BASELINE] Promoted new Baseline for {policyId}. Signal consumed.");
                 }
             }
 
-            // 3. Audit Engine
             await ExecuteAuditAsync(policyId, discovery, ctx.ExecutionId);
 
-            // 4. Archive: Processing → Processed
             var finalArchivePath = Path.Combine(ctx.ProcessedPath, Path.GetFileName(stagePath));
             _fileSystem.MoveFile(stagePath, finalArchivePath);
         }
@@ -155,7 +149,11 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
         //  Baseline Promotion
         // ─────────────────────────────────────────────────────────
 
-        private async Task HandleBaselinePromotion(string policyId, DiscoveryResult discovery, string? snowTicketId)
+        private async Task HandleBaselinePromotion(
+            string policyId,
+            DiscoveryResult discovery,
+            string? snowTicketId,
+            string executionId)
         {
             if (discovery.Attributes == null || !discovery.Attributes.Any())
             {
@@ -163,24 +161,37 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
                     $"[BASELINE] Refusing to promote empty attributes for {policyId}. Possible ZIP parse failure.",
                     null);
 
-                await _publisher.PublishStatusEventAsync(policyId, "BASELINE_PROMOTION_FAILED", new
-                {
-                    Reason = "Empty attributes returned from FileProcessor",
-                    Severity = "CRITICAL"
-                });
+                await _publisher.PublishStatusEventAsync(
+                    entityType: "POLICY",
+                    entityId: policyId,
+                    domain: "PolicyDrift",
+                    subDomain: "Baseline",
+                    status: "BASELINE_PROMOTION_FAILED",
+                    metadata: new
+                    {
+                        Reason = "Empty attributes returned from FileProcessor",
+                        Severity = "CRITICAL"
+                    });
                 return;
             }
 
             var (oldVersion, newVersion) = await _db.UpsertBaselineAsync(
                 policyId, discovery.Attributes, discovery.Hashes, snowTicketId);
 
-            await _publisher.PublishStatusEventAsync(policyId, "BASELINE_PROMOTED", new
-            {
-                OldVersion = oldVersion,
-                NewVersion = newVersion,
-                AttributeCount = discovery.Attributes.Count,
-                SNOWTicket = snowTicketId ?? "NOT_PROVIDED"
-            });
+            await _publisher.PublishStatusEventAsync(
+                entityType: "POLICY",
+                entityId: policyId,
+                domain: "PolicyDrift",
+                subDomain: "Baseline",
+                status: "BASELINE_PROMOTED",
+                metadata: new
+                {
+                    OldVersion = oldVersion,
+                    NewVersion = newVersion,
+                    AttributeCount = discovery.Attributes.Count,
+                    SNOWTicket = snowTicketId ?? "NOT_PROVIDED",
+                    ExecutionId = executionId
+                });
 
             _publisher.LogInfo(
                 $"[BASELINE] {policyId} promoted: v{oldVersion} → v{newVersion} " +
@@ -223,7 +234,14 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
 
             if (status == "DRIFT")
             {
-                await _publisher.PublishKafkaDriftAsync(policyId, differences!, baseline.Attributes);
+                await _publisher.PublishKafkaDriftAsync(
+                    entityType: "POLICY",
+                    entityId: policyId,
+                    domain: "PolicyDrift",
+                    subDomain: "Evaluation",
+                    differences: differences!,
+                    baseline: baseline.Attributes,
+                    correlationId: executionId);
             }
         }
 
@@ -293,14 +311,20 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             _publisher.LogInfo($"Orphaned (Missing Baseline): {missingBaseline}");
             _publisher.LogInfo($"Policy Roster: {string.Join(", ", allPolicyIds)}");
 
-            await _publisher.PublishStatusEventAsync("BATCH_REPORT", "COMPLETED", new
-            {
-                BatchId = executionId,
-                TotalCount = total,
-                DriftList = driftSummaries,
-                MissingBaselines = missingDetails,
-                Timestamp = DateTime.UtcNow
-            });
+            await _publisher.PublishStatusEventAsync(
+                entityType: "POLICY",
+                entityId: "BATCH_REPORT",
+                domain: "PolicyDrift",
+                subDomain: "Scan",
+                status: "BATCH_COMPLETED",
+                metadata: new
+                {
+                    BatchId = executionId,
+                    TotalCount = total,
+                    DriftList = driftSummaries,
+                    MissingBaselines = missingDetails,
+                    Timestamp = DateTime.UtcNow
+                });
         }
 
         // ─────────────────────────────────────────────────────────
@@ -319,7 +343,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
         }
 
         // ─────────────────────────────────────────────────────────
-        //  Base class abstract stubs — batch doesn't use these
+        //  Base class abstract stubs
         // ─────────────────────────────────────────────────────────
 
         protected override Task<IEnumerable<string>> GetPoliciesAsync()

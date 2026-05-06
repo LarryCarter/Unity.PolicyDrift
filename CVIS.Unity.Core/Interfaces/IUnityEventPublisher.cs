@@ -1,22 +1,41 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 
 namespace CVIS.Unity.Core.Interfaces
 {
     public interface IUnityEventPublisher
     {
-        // Status/Audit (Future Kafka Topics)
-        Task PublishStatusEventAsync(string policyId, string status, object? metadata = null);
-        Task PublishAuditEventAsync(string policyId, string action, string actor = "System");
-        // New Kafka trigger for Drift Reporting
-        Task PublishKafkaDriftAsync(string policyId, Dictionary<string, string> differences, Dictionary<string, string> baseline);
+        // Domain-agnostic event bus
+        Task PublishStatusEventAsync(
+            string entityType,
+            string entityId,
+            string domain,
+            string subDomain,
+            string status,
+            object? metadata = null);
 
-        // Observability (Serilog / SQL Logs)
+        Task PublishAuditEventAsync(
+            string entityType,
+            string entityId,
+            string domain,
+            string subDomain,
+            string action,
+            string actor = "System");
+
+        // Kafka drift trigger — domain agnostic
+        Task PublishKafkaDriftAsync(
+            string entityType,
+            string entityId,
+            string domain,
+            string subDomain,
+            Dictionary<string, string> differences,
+            Dictionary<string, string> baseline,
+            string? correlationId = null);
+
+        // Observability
         void LogInfo(string message);
-        void LogWarning(string message); // Add this line
+        void LogWarning(string message);
         void LogError(string message, Exception? ex = null);
         Task SendEmailAsync(string to, string subject, string htmlBody);
     }

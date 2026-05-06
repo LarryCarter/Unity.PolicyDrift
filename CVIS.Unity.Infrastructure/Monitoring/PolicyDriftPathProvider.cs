@@ -4,6 +4,7 @@ using Microsoft.DotNet.Scaffolding.Shared;
 using Microsoft.Extensions.Configuration;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
@@ -11,16 +12,12 @@ using System.Threading.Tasks;
 
 namespace CVIS.Unity.Infrastructure.Monitoring
 {
-    // ─────────────────────────────────────────────────────────────
-    //  Implementation
-    // ─────────────────────────────────────────────────────────────
     public class PolicyDriftPathProvider : IPolicyDriftPathProvider
     {
         private readonly IConfiguration _configuration;
         private readonly IFileSystemService _fileSystem;
         private readonly IUnityEventPublisher _publisher;
 
-        // Config keys — single source of truth
         private const string BaselineFolderKey = "Monitoring:PolicyBaselineFolder";
         private const string EvalRootKey = "Monitoring:PolicyEvalFolder";
 
@@ -40,7 +37,6 @@ namespace CVIS.Unity.Infrastructure.Monitoring
         public async Task<PolicyDriftContextResult> BuildDriftContextAsync(DateTime asOfUtc)
         {
             // ── 1. Config Validation ─────────────────────────────────
-            //    Missing config = human intervention required → Kafka alert
             var baselineFolder = _configuration[BaselineFolderKey];
             if (string.IsNullOrWhiteSpace(baselineFolder))
             {
@@ -62,7 +58,6 @@ namespace CVIS.Unity.Infrastructure.Monitoring
             }
 
             // ── 2. Root Folder Assurance ─────────────────────────────
-            //    These are infrastructure folders — safe to create if absent.
             EnsureRootFolder(baselineFolder, BaselineFolderKey);
             EnsureRootFolder(evalRoot, EvalRootKey);
 
@@ -138,9 +133,13 @@ namespace CVIS.Unity.Infrastructure.Monitoring
             };
 
             await _publisher.PublishKafkaDriftAsync(
-                policyId: $"CONFIG:{missingKey}",
+                entityType: "CONFIG",
+                entityId: $"CONFIG:{missingKey}",
+                domain: "PolicyDrift",
+                subDomain: "Integration",
                 differences: differences,
-                baseline: baseline);
+                baseline: baseline,
+                correlationId: null);
         }
     }
 }

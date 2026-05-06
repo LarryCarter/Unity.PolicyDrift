@@ -14,26 +14,17 @@ namespace CVIS.Unity.Infrastructure.Data
         public DbSet<PolicyDriftEval> PolicyDriftEvals { get; set; }
         public DbSet<PolicyDriftEvalDetail> PolicyDriftEvalDetails { get; set; }
         public DbSet<PolicyEvent> PolicyEvents { get; set; }
+        public DbSet<EventBus> UnityEvents { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            // CodeVyrn: Explicitly set the unity schema
             modelBuilder.HasDefaultSchema("unity");
-
-            // FIX: EF Core 8's OwnsOne(..., b => b.ToJson()) cannot materialize Dictionary<string, string>
-            // because Dictionary has no CLR properties for the JSON shaper to map. This causes an
-            // ArgumentOutOfRangeException in JsonEntityMaterializerRewriter on any query that reads these columns.
-            //
-            // Solution: Use ValueConversion to store as nvarchar(max) JSON strings.
-            // The DB column content is identical — no migration needed — but EF treats it as a
-            // plain string column with automatic serialization/deserialization.
 
             var dictConverter = new ValueConverter<Dictionary<string, string>, string>(
                 v => JsonConvert.SerializeObject(v),
                 v => JsonConvert.DeserializeObject<Dictionary<string, string>>(v)
                     ?? new Dictionary<string, string>());
 
-            // ValueComparer is required so EF can detect changes to dictionary contents
             var dictComparer = new ValueComparer<Dictionary<string, string>>(
                 (d1, d2) => JsonConvert.SerializeObject(d1) == JsonConvert.SerializeObject(d2),
                 d => d == null ? 0 : JsonConvert.SerializeObject(d).GetHashCode(),
@@ -78,6 +69,7 @@ namespace CVIS.Unity.Infrastructure.Data
                     .Metadata.SetValueComparer(dictComparer);
             });
 
+            // Keep existing PolicyEvents mapping — do not remove
             modelBuilder.Entity<PolicyEvent>(entity =>
             {
                 entity.ToTable("PolicyEvents");
@@ -87,13 +79,45 @@ namespace CVIS.Unity.Infrastructure.Data
                     .HasConversion(dictConverter)
                     .Metadata.SetValueComparer(dictComparer);
             });
+
+            // New UnityEvents event bus
+            modelBuilder.Entity<EventBus>(entity =>
+            {
+                entity.ToTable("UnityEvents");
+                entity.HasKey(e => e.Id);
+
+                entity.HasIndex(e => new { e.EntityType, e.EntityId })
+                    .HasDatabaseName("IX_UnityEvents_EntityType_EntityId");
+
+                entity.HasIndex(e => new { e.Domain, e.SubDomain })
+                    .HasDatabaseName("IX_UnityEvents_Domain_SubDomain");
+
+                entity.HasIndex(e => e.CorrelationId)
+                    .HasDatabaseName("IX_UnityEvents_CorrelationId");
+
+                entity.HasIndex(e => e.Timestamp)
+                    .HasDatabaseName("IX_UnityEvents_Timestamp");
+
+                entity.Property(e => e.Metadata)
+                    .HasConversion(dictConverter)
+                    .Metadata.SetValueComparer(dictComparer);
+            });
         }
 
         /// <summary>
-        /// Records a high-value System of Record event to the unity.PolicyEvents table.
-        /// This acts as the local proxy for future Kafka Event Streaming.
+        /// Domain-agnostic event bus writer.
+        /// Replaces SavePolicyEventAsync for all new MCC event writes.
         /// </summary>
-        public async Task SavePolicyEventAsync(string policyId, string eventName, string eventType, object? meta = null)
+        public async Task SaveUnityEventAsync(
+            string entityType,
+            string entityId,
+            string domain,
+            string subDomain,
+            string eventName,
+            string eventType,
+            string? correlationId = null,
+            string actor = "System",
+            object? meta = null)
         {
             Dictionary<string, string> normalizedMetadata;
 
@@ -115,10 +139,65 @@ namespace CVIS.Unity.Infrastructure.Data
                 }
                 catch
                 {
-                    normalizedMetadata = new Dictionary<string, string> { { "RawData", meta.ToString() ?? "Unknown" } };
+                    normalizedMetadata = new Dictionary<string, string>
+                        { { "RawData", meta.ToString() ?? "Unknown" } };
                 }
             }
 
+            var unityEvent = new EventBus
+            {
+                EntityType = entityType,
+                EntityId = entityId,
+                Domain = domain,
+                SubDomain = subDomain,
+                EventName = eventName,
+                EventType = eventType,
+                CorrelationId = correlationId,
+                Actor = actor,
+                Metadata = normalizedMetadata,
+                Timestamp = DateTime.UtcNow
+            };
+
+            await UnityEvents.AddAsync(unityEvent);
+            await SaveChangesAsync();
+        }
+
+        /// <summary>
+        /// Legacy — kept for backward compatibility with existing PolicyDrift callers.
+        /// New MCC code should use SaveUnityEventAsync directly.
+        /// </summary>
+        public async Task SavePolicyEventAsync(
+            string policyId,
+            string eventName,
+            string eventType,
+            object? meta = null)
+        {
+            Dictionary<string, string> normalizedMetadata;
+
+            if (meta == null)
+            {
+                normalizedMetadata = new Dictionary<string, string>();
+            }
+            else if (meta is Dictionary<string, string> directDict)
+            {
+                normalizedMetadata = directDict;
+            }
+            else
+            {
+                try
+                {
+                    var json = JsonConvert.SerializeObject(meta);
+                    normalizedMetadata = JsonConvert.DeserializeObject<Dictionary<string, string>>(json)
+                                        ?? new Dictionary<string, string>();
+                }
+                catch
+                {
+                    normalizedMetadata = new Dictionary<string, string>
+                        { { "RawData", meta.ToString() ?? "Unknown" } };
+                }
+            }
+
+            // Legacy write — kept during transition period
             var policyEvent = new PolicyEvent
             {
                 PolicyId = policyId,
@@ -129,9 +208,38 @@ namespace CVIS.Unity.Infrastructure.Data
                 Actor = "System"
             };
 
-            await this.PolicyEvents.AddAsync(policyEvent);
-            await this.SaveChangesAsync();
+            await PolicyEvents.AddAsync(policyEvent);
+
+            // Forward write to new event bus
+            var unityEvent = new EventBus
+            {
+                EntityType = "POLICY",
+                EntityId = policyId,
+                Domain = "PolicyDrift",
+                SubDomain = ResolveSubDomain(eventName),
+                EventName = eventName,
+                EventType = eventType,
+                Metadata = normalizedMetadata,
+                Timestamp = DateTime.UtcNow,
+                Actor = "System"
+            };
+
+            await UnityEvents.AddAsync(unityEvent);
+            await SaveChangesAsync();
         }
+
+        /// <summary>
+        /// Resolves SubDomain from legacy EventName during bridge period.
+        /// </summary>
+        private static string ResolveSubDomain(string eventName) =>
+            eventName.ToUpperInvariant() switch
+            {
+                var n when n.Contains("BASELINE") => "Baseline",
+                var n when n.Contains("DRIFT") => "Evaluation",
+                var n when n.Contains("SCAN") => "Scan",
+                var n when n.Contains("SNOW") => "Integration",
+                _ => "General"
+            };
 
         /// <summary>
         /// Updates an existing baseline or creates a new one.
@@ -143,14 +251,12 @@ namespace CVIS.Unity.Infrastructure.Data
             Dictionary<string, string>? hashes = null,
             string? snowTicketId = null)
         {
-            // 1. Find the current active baseline for this platform
             var existing = await PlatformBaselines
                 .FirstOrDefaultAsync(b => b.PlatformId == policyId && b.IsActive);
 
             int oldVersion = 0;
             int newVersion = 1;
 
-            // 2. Deactivate the old record if it exists
             if (existing != null)
             {
                 oldVersion = existing.Version;
@@ -159,7 +265,6 @@ namespace CVIS.Unity.Infrastructure.Data
                 existing.LastUpdate = DateTime.UtcNow;
             }
 
-            // 3. Insert the new Gold Standard as the active record
             var newBaseline = new PlatformBaseline
             {
                 Id = Guid.NewGuid(),
@@ -173,8 +278,6 @@ namespace CVIS.Unity.Infrastructure.Data
             };
 
             await PlatformBaselines.AddAsync(newBaseline);
-
-            // 4. Single SaveChanges — deactivation + insertion are atomic
             await SaveChangesAsync();
 
             return (oldVersion, newVersion);
@@ -183,11 +286,11 @@ namespace CVIS.Unity.Infrastructure.Data
         /// <summary>
         /// The Fast-Path Logic: Only creates a new Detail row if hashes have changed.
         /// </summary>
-        public async Task<Guid> GetOrCreatePolicyDetailIdAsync(string policyId, Dictionary<string, string> attributes, Dictionary<string, string> currentHashes)
+        public async Task<Guid> GetOrCreatePolicyDetailIdAsync(
+            string policyId,
+            Dictionary<string, string> attributes,
+            Dictionary<string, string> currentHashes)
         {
-            // FIX: With HasConversion, we can now query the full entity safely.
-            // The raw SQL workaround is no longer needed, but keeping the optimized
-            // projection pattern since we only need Id, DriftVersion, and the hash for comparison.
             var latestDetail = await PolicyDriftEvalDetails
                 .AsNoTracking()
                 .Where(d => d.PolicyId == policyId)
@@ -198,9 +301,7 @@ namespace CVIS.Unity.Infrastructure.Data
             if (latestDetail != null)
             {
                 if (AreHashesEqual(latestDetail.AttributesHash, currentHashes))
-                {
                     return latestDetail.Id;
-                }
             }
 
             var newDetail = new PolicyDriftEvalDetail
@@ -231,4 +332,4 @@ namespace CVIS.Unity.Infrastructure.Data
             return h1.OrderBy(kvp => kvp.Key).SequenceEqual(h2.OrderBy(kvp => kvp.Key));
         }
     }
-}
+} 

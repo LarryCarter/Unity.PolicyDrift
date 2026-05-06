@@ -228,9 +228,15 @@ namespace CVIS.Unity.Tests.WorkFlows
             var eval = await _db.PolicyDriftEvals.FirstAsync(e => e.PolicyId == "POL1");
             Assert.That(eval.Status, Is.EqualTo("DRIFT"));
             Assert.That(eval.Differences!["INI:Timeout"], Does.Contain("MODIFIED"));
-            _publisher.Verify(p => p.PublishKafkaDriftAsync("POL1",
+
+            _publisher.Verify(p => p.PublishKafkaDriftAsync(
+                "POLICY",
+                "POL1",
+                "PolicyDrift",
+                "Evaluation",
                 It.IsAny<Dictionary<string, string>>(),
-                It.IsAny<Dictionary<string, string>>()), Times.Once);
+                It.IsAny<Dictionary<string, string>>(),
+                It.IsAny<string>()), Times.Once);
         }
 
         // ═══════════════════════════════════════════════════════
@@ -251,8 +257,14 @@ namespace CVIS.Unity.Tests.WorkFlows
             var eval = await _db.PolicyDriftEvals.FirstAsync(e => e.PolicyId == "ORPHAN");
             Assert.That(eval.Status, Is.EqualTo("MISSING_BASELINE"));
             Assert.That(eval.BaselinePolicyID, Is.EqualTo(Guid.Empty));
+
             _publisher.Verify(p => p.PublishStatusEventAsync(
-                "ORPHAN", "POLICY_MISSING_BASELINE", It.IsAny<object>()));
+                "POLICY",
+                "ORPHAN",
+                "PolicyDrift",
+                "Evaluation",
+                "POLICY_MISSING_BASELINE",
+                It.IsAny<object>()));
         }
 
         // ═══════════════════════════════════════════════════════
@@ -270,15 +282,19 @@ namespace CVIS.Unity.Tests.WorkFlows
 
             _publisher.Verify(p => p.LogError(
                 It.Is<string>(s => s.Contains("[VALIDATION]") && s.Contains("BAD")), null));
-            _publisher.Verify(p => p.PublishStatusEventAsync(
-                "BAD", "BATCH_PROCESSING_ERROR", It.IsAny<object>()));
 
-            // Still archived to Processed
+            _publisher.Verify(p => p.PublishStatusEventAsync(
+                "POLICY",
+                "BAD",
+                "PolicyDrift",
+                "Scan",
+                "BATCH_PROCESSING_ERROR",
+                It.IsAny<object>()));
+
             _fileSystem.Verify(f => f.MoveFile(
                 It.Is<string>(s => s.Contains("Processing")),
                 It.Is<string>(s => s.Contains("Processed"))));
 
-            // No eval recorded
             Assert.That(await _db.PolicyDriftEvals.AnyAsync(e => e.PolicyId == "BAD"), Is.False);
         }
 
@@ -303,8 +319,14 @@ namespace CVIS.Unity.Tests.WorkFlows
             Assert.That(bl.Attributes["INI:P"], Is.EqualTo("V"));
 
             _signalFiles.Verify(s => s.TryDelete(It.IsAny<string>(), "SRV"), Times.Once);
+
             _publisher.Verify(p => p.PublishStatusEventAsync(
-                "SRV", "BASELINE_PROMOTED", It.IsAny<object>()), Times.Once);
+                "POLICY",
+                "SRV",
+                "PolicyDrift",
+                "Baseline",
+                "BASELINE_PROMOTED",
+                It.IsAny<object>()), Times.Once);
         }
 
         // ═══════════════════════════════════════════════════════
@@ -357,7 +379,13 @@ namespace CVIS.Unity.Tests.WorkFlows
             Assert.That(bl, Is.Not.Null);
 
             _publisher.Verify(p => p.PublishStatusEventAsync(
-                "SRV", "BASELINE_MISSING_SNOW_TICKET", It.IsAny<object>()), Times.Once);
+                "POLICY",
+                "SRV",
+                "PolicyDrift",
+                "Baseline",
+                "BASELINE_MISSING_SNOW_TICKET",
+                It.IsAny<object>()), Times.Once);
+
             _signalFiles.Verify(s => s.TryDelete(It.IsAny<string>(), "SRV"), Times.Once);
         }
 
@@ -386,12 +414,14 @@ namespace CVIS.Unity.Tests.WorkFlows
             await _workflow.ExecuteAsync();
 
             _publisher.Verify(p => p.PublishStatusEventAsync(
-                "SRV", "BASELINE_PROMOTION_REJECTED", It.IsAny<object>()), Times.Once);
+                "POLICY",
+                "SRV",
+                "PolicyDrift",
+                "Baseline",
+                "BASELINE_PROMOTION_REJECTED",
+                It.IsAny<object>()), Times.Once);
 
-            // Signal NOT consumed
             _signalFiles.Verify(s => s.TryDelete(It.IsAny<string>(), It.IsAny<string>()), Times.Never);
-
-            // No baseline created
             Assert.That(await _db.PlatformBaselines.AnyAsync(b => b.PlatformId == "SRV"), Is.False);
         }
 
@@ -416,8 +446,14 @@ namespace CVIS.Unity.Tests.WorkFlows
             _db.ChangeTracker.Clear();
             var bl = await _db.PlatformBaselines.FirstOrDefaultAsync(b => b.PlatformId == "SRV" && b.IsActive);
             Assert.That(bl, Is.Not.Null);
+
             _publisher.Verify(p => p.PublishStatusEventAsync(
-                "SRV", "BASELINE_PROMOTED", It.IsAny<object>()), Times.Once);
+                "POLICY",
+                "SRV",
+                "PolicyDrift",
+                "Baseline",
+                "BASELINE_PROMOTED",
+                It.IsAny<object>()), Times.Once);
         }
 
         // ═══════════════════════════════════════════════════════
@@ -442,8 +478,15 @@ namespace CVIS.Unity.Tests.WorkFlows
 
             _publisher.Verify(p => p.LogError(
                 It.Is<string>(s => s.Contains("LOCKED")), It.IsAny<Exception>()));
+
             _publisher.Verify(p => p.PublishStatusEventAsync(
-                "LOCKED", "BATCH_PROCESSING_ERROR", It.IsAny<object>()));
+                "POLICY",
+                "LOCKED",
+                "PolicyDrift",
+                "Scan",
+                "BATCH_PROCESSING_ERROR",
+                It.IsAny<object>()));
+
             _publisher.Verify(p => p.LogInfo(
                 It.Is<string>(s => s.Contains("[PROCESS]") && s.Contains("GOOD"))));
         }
@@ -540,7 +583,6 @@ namespace CVIS.Unity.Tests.WorkFlows
             ValidContext();
             Zips("A", "B");
 
-            // Return a ZIP matching the policyId being opened
             _fileSystem.Setup(f => f.OpenRead(It.Is<string>(s => s.Contains("A"))))
                 .Returns(() => GoodZip("A"));
             _fileSystem.Setup(f => f.OpenRead(It.Is<string>(s => s.Contains("B"))))
@@ -571,13 +613,19 @@ namespace CVIS.Unity.Tests.WorkFlows
             MockParse("P", new() { { "INI:K", "V" } });
             NoSignal("P");
 
-            _publisher.Setup(p => p.SendEmailAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
+            _publisher.Setup(p => p.SendEmailAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
                 .ThrowsAsync(new NotImplementedException());
 
             await _workflow.ExecuteAsync();
 
             _publisher.Verify(p => p.PublishStatusEventAsync(
-                "BATCH", "BATCH_GOVERNANCE_REPORT", It.IsAny<object>()), Times.Once);
+                "POLICY",
+                "BATCH",
+                "PolicyDrift",
+                "Scan",
+                "BATCH_GOVERNANCE_REPORT",
+                It.IsAny<object>()), Times.Once);
         }
 
         // ═══════════════════════════════════════════════════════
@@ -593,7 +641,8 @@ namespace CVIS.Unity.Tests.WorkFlows
             MockParse("P", new() { { "INI:K", "V" } });
             NoSignal("P");
 
-            _publisher.Setup(p => p.SendEmailAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
+            _publisher.Setup(p => p.SendEmailAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
                 .ThrowsAsync(new NotImplementedException());
 
             await _workflow.ExecuteAsync();
@@ -601,7 +650,6 @@ namespace CVIS.Unity.Tests.WorkFlows
             _publisher.Verify(p => p.LogWarning(
                 It.Is<string>(s => s.Contains("Email delivery not yet implemented"))));
 
-            // Pipeline still completes
             _publisher.Verify(p => p.LogInfo(It.Is<string>(s => s.Contains("complete"))));
         }
 
@@ -618,7 +666,8 @@ namespace CVIS.Unity.Tests.WorkFlows
             MockParse("P", new() { { "INI:K", "V" } });
             NoSignal("P");
 
-            _publisher.Setup(p => p.SendEmailAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
+            _publisher.Setup(p => p.SendEmailAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
                 .ThrowsAsync(new InvalidOperationException("SMTP down"));
 
             await _workflow.ExecuteAsync();
@@ -643,7 +692,8 @@ namespace CVIS.Unity.Tests.WorkFlows
             MockParse("P", new() { { "INI:K", "V" } });
             NoSignal("P");
 
-            _publisher.Setup(p => p.SendEmailAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
+            _publisher.Setup(p => p.SendEmailAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
                 .ThrowsAsync(new NotImplementedException());
 
             await _workflow.ExecuteAsync();
@@ -670,7 +720,6 @@ namespace CVIS.Unity.Tests.WorkFlows
 
             await _workflow.ExecuteAsync();
 
-            // Call again manually — should reuse the detail
             await _db.GetOrCreatePolicyDetailIdAsync("DD",
                 new() { { "INI:K", "V" } }, hashes);
 
