@@ -7,6 +7,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="Diagnostics\DbConnectionDiagnostic.cs" />
+    <Compile Remove="Diagnostics\DbConnectionProbe.cs" />
+    <Compile Remove="Diagnostics\IDbConnectionProbe.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.25">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
@@ -23,6 +29,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CVIS.Unity.Core\CVIS.Unity.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Diagnostics\" />
   </ItemGroup>
 
 </Project>
