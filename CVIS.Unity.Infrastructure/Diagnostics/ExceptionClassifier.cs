@@ -42,8 +42,9 @@ namespace CVIS.Unity.Infrastructure.Diagnostics
         //  SQL Exception — error number tells us the layer
         // ─────────────────────────────────────────────────────────
 
-        private static DiagnosticPlan ClassifySqlException(SqlException ex) =>
-            ex.Number switch
+        private static DiagnosticPlan ClassifySqlException(SqlException ex)
+        {
+            return ex.Number switch
             {
                 // ── Auth failure ──────────────────────────────────
                 // TCP worked, SQL Server responded — network is fine.
@@ -52,11 +53,11 @@ namespace CVIS.Unity.Infrastructure.Diagnostics
                 18456 => new DiagnosticPlan
                 {
                     InitialClassification = "SQL_AUTH_FAILURE",
-                    FailureLayer          = "Authentication",
-                    Severity              = "HIGH",
-                    IsKnownIntermittent   = true,
-                    ProbeSequence         = new() { "PoolState", "SqlLogin" },
-                    CaptureTargets        = new()
+                    FailureLayer = "Authentication",
+                    Severity = "HIGH",
+                    IsKnownIntermittent = true,
+                    ProbeSequence = new() { "PoolState", "SqlLogin" },
+                    CaptureTargets = new()
                     {
                         "TimeOfDay",
                         "DayOfWeek",
@@ -76,11 +77,11 @@ namespace CVIS.Unity.Infrastructure.Diagnostics
                 4060 => new DiagnosticPlan
                 {
                     InitialClassification = "SQL_DATABASE_NOT_FOUND",
-                    FailureLayer          = "Database",
-                    Severity              = "CRITICAL",
-                    IsKnownIntermittent   = false,
-                    ProbeSequence         = new() { "SqlLogin", "EfContext" },
-                    CaptureTargets        = new()
+                    FailureLayer = "Database",
+                    Severity = "CRITICAL",
+                    IsKnownIntermittent = false,
+                    ProbeSequence = new() { "SqlLogin", "EfContext" },
+                    CaptureTargets = new()
                     {
                         "TimeOfDay",
                         "DatabaseName",
@@ -99,10 +100,10 @@ namespace CVIS.Unity.Infrastructure.Diagnostics
                 10060 or 10061 or -1 => new DiagnosticPlan
                 {
                     InitialClassification = "NETWORK_UNREACHABLE",
-                    FailureLayer          = "Network",
-                    Severity              = "CRITICAL",
-                    IsKnownIntermittent   = true,
-                    ProbeSequence         = new()
+                    FailureLayer = "Network",
+                    Severity = "CRITICAL",
+                    IsKnownIntermittent = true,
+                    ProbeSequence = new()
                     {
                         "DNS", "TCP", "SqlLogin", "EfContext", "PoolState"
                     },
@@ -130,11 +131,11 @@ namespace CVIS.Unity.Infrastructure.Diagnostics
                 233 => new DiagnosticPlan
                 {
                     InitialClassification = "SQL_NO_PROCESS_AT_PIPE",
-                    FailureLayer          = "SqlServer",
-                    Severity              = "HIGH",
-                    IsKnownIntermittent   = true,
-                    ProbeSequence         = new() { "TCP", "PoolState", "SqlLogin" },
-                    CaptureTargets        = new()
+                    FailureLayer = "SqlServer",
+                    Severity = "HIGH",
+                    IsKnownIntermittent = true,
+                    ProbeSequence = new() { "TCP", "PoolState", "SqlLogin" },
+                    CaptureTargets = new()
                     {
                         "TimeOfDay",
                         "ConnectionPoolState",
@@ -153,11 +154,11 @@ namespace CVIS.Unity.Infrastructure.Diagnostics
                 -2 => new DiagnosticPlan
                 {
                     InitialClassification = "SQL_COMMAND_TIMEOUT",
-                    FailureLayer          = "Database",
-                    Severity              = "MEDIUM",
-                    IsKnownIntermittent   = true,
-                    ProbeSequence         = new() { "TCP", "PoolState" },
-                    CaptureTargets        = new()
+                    FailureLayer = "Database",
+                    Severity = "MEDIUM",
+                    IsKnownIntermittent = true,
+                    ProbeSequence = new() { "TCP", "PoolState" },
+                    CaptureTargets = new()
                     {
                         "TimeOfDay",
                         "CommandText",
@@ -176,10 +177,10 @@ namespace CVIS.Unity.Infrastructure.Diagnostics
                 _ => new DiagnosticPlan
                 {
                     InitialClassification = $"SQL_EXCEPTION_{ex.Number}",
-                    FailureLayer          = "Unknown",
-                    Severity              = "HIGH",
-                    IsKnownIntermittent   = false,
-                    ProbeSequence         = new()
+                    FailureLayer = "Unknown",
+                    Severity = "HIGH",
+                    IsKnownIntermittent = false,
+                    ProbeSequence = new()
                     {
                         "DNS", "TCP", "SqlLogin", "EfContext", "PoolState"
                     },
@@ -193,6 +194,7 @@ namespace CVIS.Unity.Infrastructure.Diagnostics
                     RunPatternAnalysis = false
                 }
             };
+        }
 
         // ─────────────────────────────────────────────────────────
         //  Socket Exception — below SQL layer entirely

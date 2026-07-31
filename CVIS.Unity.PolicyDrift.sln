@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 17
-VisualStudioVersion = 17.14.36518.9
+# Visual Studio Version 18
+VisualStudioVersion = 18.5.11801.241 oobstable
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CVIS.Unity.Core", "CVIS.Unity.Core\CVIS.Unity.Core.csproj", "{3EA13857-1D69-44CD-8497-E935A94E69AC}"
 EndProject
@@ -12,6 +12,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CVIS.Unity.PolicyDrift.ConsoleHost", "CVIS.Unity.PolicyDrift.ConsoleHost\CVIS.Unity.PolicyDrift.ConsoleHost.csproj", "{A05D5889-F2E5-CDF9-9677-D62BEBBDFED0}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CVIS.Unity.Tests", "CVIS.Unity.Tests\CVIS.Unity.Tests.csproj", "{3F25E3F1-EB25-4BB0-887D-F3DEC7386AD2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RoslynAstTest", "..\..\..\Downloads\roslyn-ast-test\roslyn-ast-test\RoslynAstTest.csproj", "{49395A84-259F-357B-D4BF-45FA7D75C074}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -39,6 +41,10 @@ Global
 		{3F25E3F1-EB25-4BB0-887D-F3DEC7386AD2}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{3F25E3F1-EB25-4BB0-887D-F3DEC7386AD2}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{3F25E3F1-EB25-4BB0-887D-F3DEC7386AD2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{49395A84-259F-357B-D4BF-45FA7D75C074}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{49395A84-259F-357B-D4BF-45FA7D75C074}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{49395A84-259F-357B-D4BF-45FA7D75C074}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{49395A84-259F-357B-D4BF-45FA7D75C074}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
