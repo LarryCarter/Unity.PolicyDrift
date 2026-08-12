@@ -24,6 +24,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
         private readonly ISignalFileService _signalFiles;
         private readonly IDriftComparisonService _driftComparison;
         private readonly PolicyDbContext _db;
+        private readonly IPolicyDriftReportAuditor? _reportAuditor;
 
         public PlatformWorkflow(
             IFileSystemService fileSystem,
@@ -33,7 +34,8 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             FileProcessor fileProcessor,
             ISignalFileService signalFiles,
             IDriftComparisonService driftComparison,
-            PolicyDbContext db)
+            PolicyDbContext db,
+            IPolicyDriftReportAuditor? reportAuditor = null)
             : base(fileSystem, publisher, driftPath)
         {
             _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
@@ -41,6 +43,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             _signalFiles = signalFiles ?? throw new ArgumentNullException(nameof(signalFiles));
             _driftComparison = driftComparison ?? throw new ArgumentNullException(nameof(driftComparison));
             _db = db ?? throw new ArgumentNullException(nameof(db));
+            _reportAuditor = reportAuditor;
         }
 
         public override string WorkflowName => "CyberArk Platform ZIP Monitoring";
@@ -83,7 +86,9 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             await ProcessEachZip(ctx, zips);
 
             // ── 6. Batch Report ──────────────────────────────────────
-            await GenerateBatchReport(ctx.ExecutionId);
+            await GenerateBatchReport(
+                ctx.ExecutionId,
+                DateOnly.ParseExact(ctx.DateStamp, "MM-dd-yyyy"));
 
             _publisher.LogInfo($"[WORKFLOW] Execution {ctx.ExecutionId} complete. All ZIPs processed.");
         }
@@ -487,7 +492,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
         //  BATCH REPORT — Corporate branded HTML email
         // ═══════════════════════════════════════════════════════════════════
 
-        private async Task GenerateBatchReport(string executionId)
+        private async Task GenerateBatchReport(string executionId, DateOnly reportDate)
         {
             _publisher.LogInfo($"[REPORT] Aggregating results for Batch: {executionId}");
 
@@ -570,6 +575,9 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             await KafkaBatchGovernanceReport(
                 executionId, total, noDriftResults, driftResults,
                 missingResults, driftSections, promotions);
+
+            if (_reportAuditor != null)
+                await _reportAuditor.AuditReportAsync(executionId, reportDate);
         }
 
         private async Task SendEmail(

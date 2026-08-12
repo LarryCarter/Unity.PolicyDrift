@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Newtonsoft.Json;
 using CVIS.Unity.Core.Entities;
+using CVIS.Unity.Infrastructure.Data.Audit;
 
 namespace CVIS.Unity.Infrastructure.Data
 {
@@ -15,6 +16,8 @@ namespace CVIS.Unity.Infrastructure.Data
         public DbSet<PolicyDriftEvalDetail> PolicyDriftEvalDetails { get; set; }
         public DbSet<PolicyEvent> PolicyEvents { get; set; }
         public DbSet<EventBus> UnityEvents { get; set; }
+        public DbSet<CaEpvReportingAuditRow> CaEpvReportingAuditRows { get; set; }
+        public DbSet<LogEventAuditRow> LogEventAuditRows { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -101,6 +104,26 @@ namespace CVIS.Unity.Infrastructure.Data
                 entity.Property(e => e.Metadata)
                     .HasConversion(dictConverter)
                     .Metadata.SetValueComparer(dictComparer);
+            });
+
+            // Read-only audit projections over existing reporting tables.
+            // These mappings do not create or migrate either source table.
+            modelBuilder.Entity<CaEpvReportingAuditRow>(entity =>
+            {
+                entity.HasNoKey();
+                entity.ToTable("CA_EPV_REPORTING", "dbo", table =>
+                    table.ExcludeFromMigrations());
+                entity.Property(e => e.PolicyId).HasColumnName("PolicyID");
+                entity.Property(e => e.CafDeletionDate).HasColumnName("CAFDeletionDate");
+            });
+
+            modelBuilder.Entity<LogEventAuditRow>(entity =>
+            {
+                entity.HasNoKey();
+                entity.ToTable("LogEvents", "unity", table =>
+                    table.ExcludeFromMigrations());
+                entity.Property(e => e.Message).HasColumnName("Message");
+                entity.Property(e => e.Timestamp).HasColumnName("TimeStamp");
             });
         }
 
@@ -332,4 +355,4 @@ namespace CVIS.Unity.Infrastructure.Data
             return h1.OrderBy(kvp => kvp.Key).SequenceEqual(h2.OrderBy(kvp => kvp.Key));
         }
     }
-} 
+}
