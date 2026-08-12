@@ -3,6 +3,7 @@ using CVIS.Unity.Infrastructure.Data;
 using CVIS.Unity.Infrastructure.Messaging;
 using CVIS.Unity.Infrastructure.Monitoring;
 using CVIS.Unity.Infrastructure.Services;
+using CVIS.Unity.Infrastructure.Audit;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -28,6 +29,9 @@ namespace CVIS.Unity.Infrastructure
             // The ImmediateUnityPublisher is a simple implementation that logs events directly.
             // Replace with KafkaPublisher when ready.
             services.AddScoped<IUnityEventPublisher, ImmediateUnityPublisher>();
+            services.AddScoped<PolicyDriftAuditService>();
+            services.AddScoped<IPolicyDriftAuditPublisher, UnityEventPolicyDriftAuditPublisher>();
+            services.AddScoped<IPolicyDriftReportAuditor, PolicyDriftReportAuditor>();
 
             // 3. Core Services
 

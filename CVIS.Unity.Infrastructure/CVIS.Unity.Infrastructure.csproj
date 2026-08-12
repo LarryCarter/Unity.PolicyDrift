@@ -33,6 +33,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="..\docs\audit\policy-drift-audit-reference.sql"
+                      Link="Audit\policy-drift-audit-reference.sql" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Folder Include="Diagnostics\" />
   </ItemGroup>
 
