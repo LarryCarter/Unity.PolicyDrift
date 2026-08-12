@@ -1,5 +1,6 @@
 using System;
-using Microsoft.Data.SqlClient;
+using System.Data.Common;
+using System.Reflection;
 using System.Net.Sockets;
 using CVIS.Unity.Core.Diagnostics;
 
@@ -31,9 +32,9 @@ namespace CVIS.Unity.Infrastructure.Diagnostics
         {
             return ex switch
             {
-                SqlException sql => ClassifySqlException(sql),
                 SocketException  => ClassifySocketException(),
                 TimeoutException => ClassifyTimeoutException(),
+                DbException db   => ClassifyDatabaseException(db),
                 _                => ClassifyUnknown(ex)
             };
         }
@@ -42,9 +43,10 @@ namespace CVIS.Unity.Infrastructure.Diagnostics
         //  SQL Exception — error number tells us the layer
         // ─────────────────────────────────────────────────────────
 
-        private static DiagnosticPlan ClassifySqlException(SqlException ex)
+        private static DiagnosticPlan ClassifyDatabaseException(DbException ex)
         {
-            return ex.Number switch
+            var errorCode = GetDatabaseErrorCode(ex);
+            return errorCode switch
             {
                 // ── Auth failure ──────────────────────────────────
                 // TCP worked, SQL Server responded — network is fine.
@@ -176,7 +178,7 @@ namespace CVIS.Unity.Infrastructure.Diagnostics
                 // ── Default SQL catch-all ─────────────────────────
                 _ => new DiagnosticPlan
                 {
-                    InitialClassification = $"SQL_EXCEPTION_{ex.Number}",
+                    InitialClassification = $"DATABASE_EXCEPTION_{errorCode}",
                     FailureLayer = "Unknown",
                     Severity = "HIGH",
                     IsKnownIntermittent = false,
@@ -189,11 +191,22 @@ namespace CVIS.Unity.Infrastructure.Diagnostics
                         "TimeOfDay", "RetryCount", "ConnectionPoolState"
                     },
                     InvestigationQuestion =
-                        $"SqlException number {ex.Number} — " +
+                        $"Database provider error {errorCode} — " +
                         "run full probe chain to determine layer.",
                     RunPatternAnalysis = false
                 }
             };
+        }
+
+        internal static int GetDatabaseErrorCode(DbException ex)
+        {
+            var numberProperty = ex.GetType().GetProperty(
+                "Number", BindingFlags.Instance | BindingFlags.Public);
+
+            return numberProperty?.PropertyType == typeof(int) &&
+                   numberProperty.GetValue(ex) is int providerCode
+                ? providerCode
+                : ex.ErrorCode;
         }
 
         // ─────────────────────────────────────────────────────────

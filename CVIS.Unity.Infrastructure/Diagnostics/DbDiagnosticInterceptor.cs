@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Data.Common;
-using Microsoft.Data.SqlClient;
 using System.Threading;
 using System.Threading.Tasks;
 using CVIS.Unity.Core.Diagnostics;
@@ -167,8 +166,8 @@ namespace CVIS.Unity.Infrastructure.Diagnostics
                         break;
 
                     case "CommandText":
-                        context["CommandText"] = ex is SqlException sql
-                            ? $"SqlError {sql.Number}"
+                        context["CommandText"] = ex is DbException db
+                            ? $"DatabaseError {ExceptionClassifier.GetDatabaseErrorCode(db)}"
                             : "Unknown";
                         break;
 
