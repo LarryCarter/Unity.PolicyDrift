@@ -4,6 +4,7 @@ using CVIS.Unity.Core.Models;
 using CVIS.Unity.Core.Monitoring;
 using CVIS.Unity.Infrastructure.Data;
 using CVIS.Unity.PolicyDrift.Orchestration.Services;
+using CVIS.Unity.PolicyDrift.Orchestrator.Reporting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using System;
@@ -546,12 +547,14 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
                 })
                 .ToList();
 
+            var environment = PolicyDriftEnvironment.Resolve(_configuration);
+            var generatedAtUtc = DateTime.UtcNow;
             var html = BuildReportHtml(
                 executionId, total, promotions, missingResults,
-                driftSections, noDriftResults);
+                driftSections, noDriftResults, environment, generatedAtUtc);
 
             var recipients = _configuration["Reporting:EmailRecipients"] ?? "unity-governance@company.com";
-            await SendEmail(executionId, html, recipients);
+            await SendEmail(executionId, html, recipients, environment, generatedAtUtc);
 
             await _db.SavePolicyEventAsync("BATCH", "BATCH_REPORT_GENERATED", "INFO", new
             {
@@ -569,13 +572,19 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
                 missingResults, driftSections, promotions);
         }
 
-        private async Task SendEmail(string executionId, string html, string recipients)
+        private async Task SendEmail(
+            string executionId,
+            string html,
+            string recipients,
+            string environment,
+            DateTime generatedAtUtc)
         {
             try
             {
                 await _publisher.SendEmailAsync(
                     to: recipients,
-                    subject: $"Unity Policy Drift Report — Batch {executionId[..8]} | {DateTime.UtcNow:yyyy-MM-dd}",
+                    subject: PolicyDriftEnvironment.BuildEmailSubject(
+                        environment, executionId, generatedAtUtc),
                     htmlBody: html);
 
                 _publisher.LogInfo($"[REPORT] Governance report emailed to {recipients}.");
@@ -652,7 +661,9 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             List<BaselinePromotionEntry> promotions,
             List<PolicyDriftEval> missingBaseline,
             List<DriftReportEntry> driftSections,
-            List<PolicyDriftEval> noDrift)
+            List<PolicyDriftEval> noDrift,
+            string environment,
+            DateTime generatedAtUtc)
         {
             var sb = new StringBuilder();
 
@@ -685,7 +696,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             sb.AppendLine(".footer { margin: 24px 0 0; padding: 16px 0 0; border-top: 1px solid #e0e0e0; font-size: 11px; color: #999; }");
             sb.AppendLine("</style></head><body>");
             CoporateHeader(sb);
-            ItsmBadgeDate(sb);
+            ItsmBadgeDate(sb, environment, generatedAtUtc);
             Greeting(total, sb);
             SummaryCards(total, missingBaseline, driftSections, noDrift, sb);
             BarelineUpdates(promotions, sb);
@@ -828,11 +839,14 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             sb.AppendLine($"<p style='margin:0 0 20px;font-size:14px;color:#555;'>The following is the automated daily governance report for CyberArk platform policy drift monitoring. This batch evaluated <strong>{total} platforms</strong> against their authorized baselines.</p>");
         }
 
-        private static void ItsmBadgeDate(StringBuilder sb)
+        private static void ItsmBadgeDate(
+            StringBuilder sb,
+            string environment,
+            DateTime generatedAtUtc)
         {
             sb.AppendLine("<div style='display:flex;justify-content:space-between;align-items:flex-start;margin:0 0 20px;'>");
-            sb.AppendLine("<span class='itsm-badge'>CVIS Unity — Policy Drift Governance</span>");
-            sb.AppendLine($"<span style='font-size:13px;color:#666;'>{DateTime.UtcNow:MMMM d, yyyy}</span>");
+            sb.AppendLine($"<span class='itsm-badge'>{PolicyDriftEnvironment.BuildReportBadge(environment)}</span>");
+            sb.AppendLine($"<span style='font-size:13px;color:#666;'>{generatedAtUtc:MMMM d, yyyy}</span>");
             sb.AppendLine("</div>");
         }
 

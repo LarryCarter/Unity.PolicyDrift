@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Data.Common;
-using System.Data.SqlClient;
+using Microsoft.Data.SqlClient;
 using System.Threading;
 using System.Threading.Tasks;
 using CVIS.Unity.Core.Diagnostics;
@@ -32,7 +32,7 @@ namespace CVIS.Unity.Infrastructure.Diagnostics
     ///     → If abort: throw InfrastructureConnectionException
     ///     → If transient: log, allow EF execution strategy to retry
     /// </summary>
-    public class DbDiagnosticInterceptor : DbCommandInterceptor
+    public class DbDiagnosticInterceptor : DbConnectionInterceptor
     {
         private readonly IInfrastructureHealthService _health;
         private readonly IUnityEventPublisher _publisher;
