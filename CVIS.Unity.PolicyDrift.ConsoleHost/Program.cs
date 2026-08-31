@@ -76,6 +76,7 @@ namespace CVIS.Unity.PolicyDrift.ConsoleHost
                     services.AddPolicyDriftOrchestration();
                 });
 
+        // Program.cs -> RunOrchestratorAsync
         private static async Task RunOrchestratorAsync(IServiceProvider services)
         {
             using (var scope = services.CreateScope())
@@ -84,35 +85,31 @@ namespace CVIS.Unity.PolicyDrift.ConsoleHost
 
                 try
                 {
-                    // 1. Database & Schema Initialization
-                    var context = scopedProvider.GetRequiredService<PolicyDbContext>();
+                    // 1. Initialise the Arsenal (Schema & Migrations)
+                    var initializer = scopedProvider.GetRequiredService<DbInitializer>();
+                    await initializer.InitializeAsync();
+
+                    // 2. Resolve Core Dependencies
                     var publisher = scopedProvider.GetRequiredService<IUnityEventPublisher>();
+                    var policyWorkflows = scopedProvider.GetServices<IPolicyWorkflow>();
 
-                    publisher.LogInfo("Verifying Database Schema 'unity' on THOUSANDSUNNY...");
-
-                    // Cryptorion: Validated. Execute raw SQL for schema before EF handles tables.
-                    await context.Database.ExecuteSqlRawAsync(
-                        "IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'unity') " +
-                        "BEGIN EXEC('CREATE SCHEMA unity') END");
-
-                    // Ensures tables exist without requiring manual migrations 
-                    await context.Database.EnsureCreatedAsync();
-
-                    // 2. Workflow Execution
-                    var workflows = scopedProvider.GetServices<IPolicyWorkflow>();
-
-                    foreach (var workflow in workflows)
+                    // 3. Execution Loop
+                    foreach (var workflow in policyWorkflows)
                     {
                         publisher.LogInfo($"--> Launching Workflow: {workflow.WorkflowName}");
+
+                        // Datyrix: Execute the individual platform audit
                         await workflow.ExecuteAsync();
                     }
                 }
                 catch (Exception ex)
                 {
-                    // Datyrix: Ensure we log to Serilog/SQL if the init fails
+                    // Ensure the failure is captured in the System of Record (SQL/Serilog)
                     var logger = scopedProvider.GetRequiredService<ILogger<Program>>();
                     logger.LogCritical(ex, "Orchestration failed during initialization or execution.");
-                    throw; // Re-throw to be caught by the Main try-catch safety net
+
+                    // Re-throw to trigger the Main catch-block safety net
+                    throw;
                 }
             }
         }

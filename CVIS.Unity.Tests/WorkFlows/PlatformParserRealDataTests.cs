@@ -3,7 +3,7 @@ using NUnit.Framework;
 using System.Collections.Generic;
 using System.Text;
 
-namespace CVIS.Unity.Tests
+namespace CVIS.Unity.Tests.WorkFlows
 {
     [TestFixture]
     public class PlatformParserRealDataTests

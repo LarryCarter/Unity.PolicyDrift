@@ -1,30 +1,29 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
+using System.IO;
 using System.Threading.Tasks;
 
 namespace CVIS.Unity.Core.Interfaces
-{
+{/// <summary>
+ /// Pure filesystem abstraction — stateless, config-free, cross-platform.
+ /// No domain knowledge. No path derivation. Just OS-level I/O.
+ /// Injected into domain services (PolicyDriftPathProvider, orchestrators, processors)
+ /// that own the path logic themselves.
+ /// </summary>
     public interface IFileSystemService
     {
-        /// <summary>
-        /// Checks if a {PolicyID}.txt file exists in the configured signal folder.
-        /// </summary>
-        bool SignalFileExists(string policyId);
+        // ── Directory Operations ──────────────────────────────────
+        bool DirectoryExists(string path);
+        void CreateDirectory(string path);
+        string[] GetFilesInDirectory(string path, string searchPattern);
 
-        /// <summary>
-        /// Deletes the signal file once the baseline update is complete.
-        /// </summary>
-        void DeleteSignalFile(string policyId);
+        // ── File Operations ───────────────────────────────────────
+        bool FileExists(string path);
+        void MoveFile(string source, string destination);
+        void DeleteFile(string path);
+        Stream OpenRead(string path);
+        string ReadAllText(string path);
 
-        /// <summary>
-        /// Resolves the full path to a file in a cross-platform manner.
-        /// </summary>
-        string GetFullPath(string fileName);
-
-        // New workflow methods for CyberArk ZIP handling
-        Task<string> ExtractPlatformPackage(Stream zipStream, string platformId);
-        void Cleanup(string path);
+        // ── Cleanup ───────────────────────────────────────────────
+        void DeleteDirectory(string path, bool recursive);
     }
 }

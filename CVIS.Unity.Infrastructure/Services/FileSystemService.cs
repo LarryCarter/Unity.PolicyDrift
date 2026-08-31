@@ -1,88 +1,109 @@
-﻿using System;
-using System.IO;
-using System.IO.Compression;
-using System.Threading.Tasks;
+﻿using CVIS.Unity.Core.Interfaces;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
-using CVIS.Unity.Core.Interfaces;
+using System;
+using System.IO;
+using System.IO.Compression;
+using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 
 namespace CVIS.Unity.Infrastructure.Services
 {
+    /// <summary>
+    /// Pure filesystem implementation. No config, no domain paths, no state.
+    /// Retry logic on MoveFile preserved — file lock contention is an I/O concern.
+    /// Works identically on Windows VMs and Linux containers.
+    /// </summary>
     public class FileSystemService : IFileSystemService
     {
-        private readonly string _baselinePath;
-        private readonly string _tempRoot;
         private readonly ILogger<FileSystemService> _logger;
 
-        public FileSystemService(IConfiguration config, ILogger<FileSystemService> logger)
+        public FileSystemService(ILogger<FileSystemService> logger)
         {
-            _logger = logger;
-            // Your existing baseline logic
-            _baselinePath = config["Storage:BaselinePath"] ?? "C:\\Baselines";
-
-            // Datyrix: New dedicated temp folder for ZIP extractions
-            _tempRoot = Path.Combine(Path.GetTempPath(), "CVIS_Unity_Working");
-
-            if (!Directory.Exists(_tempRoot)) Directory.CreateDirectory(_tempRoot);
-            if (!Directory.Exists(_baselinePath)) Directory.CreateDirectory(_baselinePath);
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
-        #region Existing Signal File Logic (Larry's Original)
+        // ── Directory Operations ──────────────────────────────────
 
-        public bool SignalFileExists(string policyId)
+        public bool DirectoryExists(string path) => Directory.Exists(path);
+
+        public void CreateDirectory(string path) => Directory.CreateDirectory(path);
+
+        public string[] GetFilesInDirectory(string path, string searchPattern)
+            => Directory.GetFiles(path, searchPattern);
+
+        // ── File Operations ───────────────────────────────────────
+
+        public bool FileExists(string path) => File.Exists(path);
+
+        public void MoveFile(string source, string destination)
         {
-            var path = Path.Combine(_baselinePath, $"{policyId}.txt");
-            return File.Exists(path);
+            var destDir = Path.GetDirectoryName(destination);
+            if (!string.IsNullOrEmpty(destDir) && !Directory.Exists(destDir))
+                Directory.CreateDirectory(destDir);
+
+            const int maxRetries = 3;
+            const int delayMs = 2000;
+
+            for (int attempt = 0; attempt < maxRetries; attempt++)
+            {
+                try
+                {
+                    File.Move(source, destination, overwrite: true);
+                    return;
+                }
+                catch (IOException ex) when (IsFileLocked(ex))
+                {
+                    if (attempt == maxRetries - 1)
+                    {
+                        throw new InvalidOperationException(
+                            $"CRITICAL: File {source} remains locked after {maxRetries} attempts.", ex);
+                    }
+
+                    _logger.LogWarning(
+                        "File {File} is locked. Attempt {Attempt}/{Max}. Retrying in {Delay}ms...",
+                        source, attempt + 1, maxRetries, delayMs);
+
+                    Thread.Sleep(delayMs);
+                }
+            }
         }
 
-        public void DeleteSignalFile(string policyId)
+        public void DeleteFile(string path)
         {
-            var path = Path.Combine(_baselinePath, $"{policyId}.txt");
-            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(path))
+                File.Delete(path);
         }
 
-        public string GetFullPath(string fileName)
-        {
-            return Path.Combine(_baselinePath, fileName);
-        }
+        public Stream OpenRead(string path) => File.OpenRead(path);
 
-        #endregion
+        public string ReadAllText(string path) => File.ReadAllText(path);
 
-        #region New Extraction & Cleanup Logic (Unity Workflow)
+        // ── Cleanup ───────────────────────────────────────────────
 
-        public async Task<string> ExtractPlatformPackage(Stream zipStream, string platformId)
-        {
-            // CodeVyrn: Create a unique sub-folder for this specific run
-            var runId = Guid.NewGuid().ToString().Substring(0, 8);
-            var extractPath = Path.Combine(_tempRoot, platformId, runId);
-
-            _logger.LogDebug("Extracting package for {PlatformId} to {Path}", platformId, extractPath);
-
-            if (!Directory.Exists(extractPath)) Directory.CreateDirectory(extractPath);
-
-            using var archive = new ZipArchive(zipStream);
-            await Task.Run(() => archive.ExtractToDirectory(extractPath, overwriteFiles: true));
-
-            return extractPath;
-        }
-
-        public void Cleanup(string path)
+        public void DeleteDirectory(string path, bool recursive)
         {
             try
             {
                 if (Directory.Exists(path))
                 {
-                    _logger.LogDebug("Cleaning up temporary directory: {Path}", path);
-                    Directory.Delete(path, recursive: true);
+                    _logger.LogDebug("Deleting directory: {Path} (recursive: {Recursive})", path, recursive);
+                    Directory.Delete(path, recursive);
                 }
             }
             catch (Exception ex)
             {
-                // Cryptorion: Log warning but don't break the main audit flow if a file handle is stuck
-                _logger.LogWarning(ex, "Failed to clean up path: {Path}. A process may still have a handle.", path);
+                _logger.LogWarning(ex,
+                    "Failed to delete directory: {Path}. A process may still have a handle.", path);
             }
         }
 
-        #endregion
+        // ── Private ───────────────────────────────────────────────
+
+        private static bool IsFileLocked(IOException exception)
+        {
+            int errorCode = Marshal.GetHRForException(exception) & 0xFFFF;
+            return errorCode == 32 || errorCode == 33;
+        }
     }
 }

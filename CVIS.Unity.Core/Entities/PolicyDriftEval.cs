@@ -27,5 +27,5 @@ public class PolicyDriftEval
 
     public DateTime RunTimestamp { get; set; } = DateTime.UtcNow;
 
-    public Guid ExecutionId { get; set; } // Batch grouping ID
+    public string ExecutionId { get; set; } // Batch grouping ID
 }
