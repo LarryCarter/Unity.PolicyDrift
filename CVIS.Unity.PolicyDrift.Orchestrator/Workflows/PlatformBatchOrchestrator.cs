@@ -17,6 +17,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
         private readonly IFileProcessor _fileProcessor;
         private readonly ISignalFileService _signalFiles;
         private readonly IDriftComparisonService _driftComparison;
+        private readonly IPolicyDriftReportAuditor? _reportAuditor;
 
         public PlatformBatchOrchestrator(
             IFileSystemService fileSystem,
@@ -25,13 +26,15 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             IFileProcessor fileProcessor,
             ISignalFileService signalFiles,
             IDriftComparisonService driftComparison,
-            PolicyDbContext db)
+            PolicyDbContext db,
+            IPolicyDriftReportAuditor? reportAuditor = null)
             : base(fileSystem, publisher, driftPath)
         {
             _db = db ?? throw new ArgumentNullException(nameof(db));
             _fileProcessor = fileProcessor ?? throw new ArgumentNullException(nameof(fileProcessor));
             _signalFiles = signalFiles ?? throw new ArgumentNullException(nameof(signalFiles));
             _driftComparison = driftComparison ?? throw new ArgumentNullException(nameof(driftComparison));
+            _reportAuditor = reportAuditor;
         }
 
         public override string WorkflowName => "CyberArk Platform Batch";
@@ -86,7 +89,9 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
             }
 
             // ── 5. Report & Cleanup ──────────────────────────────────
-            await GenerateBatchReport(ctx.ExecutionId);
+            await GenerateBatchReport(
+                ctx.ExecutionId,
+                DateOnly.ParseExact(ctx.DateStamp, "MM-dd-yyyy"));
 
             if (_fileSystem.DirectoryExists(ctx.ProcessingPath))
             {
@@ -273,7 +278,7 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
         //  Batch Report
         // ─────────────────────────────────────────────────────────
 
-        private async Task GenerateBatchReport(string executionId)
+        private async Task GenerateBatchReport(string executionId, DateOnly reportDate)
         {
             _publisher.LogInfo($"[REPORT] Aggregating results for Batch: {executionId}");
 
@@ -325,6 +330,9 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
                     MissingBaselines = missingDetails,
                     Timestamp = DateTime.UtcNow
                 });
+
+            if (_reportAuditor != null)
+                await _reportAuditor.AuditReportAsync(executionId, reportDate);
         }
 
         // ─────────────────────────────────────────────────────────

@@ -49,7 +49,10 @@ namespace CVIS.Unity.Tests.WorkFlows
             _db = new PolicyDbContext(options);
 
             _config = new ConfigurationBuilder()
-                .AddInMemoryCollection(new Dictionary<string, string?>()).Build();
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["POLICYDRIFT_ENVIRONMENT"] = "UAT"
+                }).Build();
 
             BuildWorkflow(_config);
         }
@@ -399,6 +402,7 @@ namespace CVIS.Unity.Tests.WorkFlows
             var strictConfig = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?>
                 {
+                    ["POLICYDRIFT_ENVIRONMENT"] = "UAT",
                     ["Governance:RequireSnowTicket"] = "true"
                 }).Build();
             BuildWorkflow(strictConfig);
@@ -431,6 +435,7 @@ namespace CVIS.Unity.Tests.WorkFlows
             var strictConfig = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?>
                 {
+                    ["POLICYDRIFT_ENVIRONMENT"] = "UAT",
                     ["Governance:RequireSnowTicket"] = "true"
                 }).Build();
             BuildWorkflow(strictConfig);
@@ -737,6 +742,7 @@ namespace CVIS.Unity.Tests.WorkFlows
             var scopeConfig = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?>
                 {
+                    ["POLICYDRIFT_ENVIRONMENT"] = "UAT",
                     ["Governance:DriftScope:DLL"] = "false"
                 }).Build();
             BuildWorkflow(scopeConfig);

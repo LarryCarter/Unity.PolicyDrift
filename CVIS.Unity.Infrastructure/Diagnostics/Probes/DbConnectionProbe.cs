@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
-using System.Data.SqlClient;
+using System.Data;
+using System.Data.Common;
 using System.Diagnostics;
 using System.Linq;
 using System.Net;
@@ -35,7 +36,7 @@ namespace CVIS.Unity.Infrastructure.Diagnostics.Probes
         private readonly ILogger<DbConnectionProbe> _logger;
 
         private const int TcpTimeoutMs  = 3000;
-        private const int SqlTimeoutSec = 5;
+        private const int DatabaseTimeoutSec = 5;
 
         public string ProbeName { get; }
         public string Category  => "Database";
@@ -204,15 +205,18 @@ namespace CVIS.Unity.Infrastructure.Diagnostics.Probes
             string connString, CancellationToken cancellationToken)
         {
             var sw = Stopwatch.StartNew();
+            DbConnection? conn = null;
+            var shouldClose = false;
             try
             {
-                var builder = new SqlConnectionStringBuilder(connString)
-                {
-                    ConnectTimeout = SqlTimeoutSec
-                };
+                conn = _dbContext.Database.GetDbConnection();
+                shouldClose = conn.State == ConnectionState.Closed;
+                using var timeout = CancellationTokenSource
+                    .CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(TimeSpan.FromSeconds(DatabaseTimeoutSec));
 
-                await using var conn = new SqlConnection(builder.ConnectionString);
-                await conn.OpenAsync(cancellationToken);
+                if (shouldClose)
+                    await conn.OpenAsync(timeout.Token);
                 sw.Stop();
 
                 return new ProbeStep
@@ -223,7 +227,7 @@ namespace CVIS.Unity.Infrastructure.Diagnostics.Probes
                     Message   = $"Login OK | Server: {conn.DataSource} | DB: {conn.Database}"
                 };
             }
-            catch (SqlException ex)
+            catch (DbException ex)
             {
                 sw.Stop();
                 return new ProbeStep
@@ -231,9 +235,14 @@ namespace CVIS.Unity.Infrastructure.Diagnostics.Probes
                     StepName    = "SqlLogin",
                     Success     = false,
                     ElapsedMs   = sw.ElapsedMilliseconds,
-                    Message     = $"SQL login failed — error {ex.Number}",
-                    ErrorDetail = $"SqlException [{ex.Number}] State {ex.State}: {ex.Message}"
+                    Message     = $"Database login failed — error {ExceptionClassifier.GetDatabaseErrorCode(ex)}",
+                    ErrorDetail = $"{ex.GetType().Name} [{ExceptionClassifier.GetDatabaseErrorCode(ex)}]: {ex.Message}"
                 };
+            }
+            finally
+            {
+                if (shouldClose && conn?.State != ConnectionState.Closed)
+                    await conn!.CloseAsync();
             }
         }
 
@@ -274,7 +283,11 @@ namespace CVIS.Unity.Infrastructure.Diagnostics.Probes
             var sw = Stopwatch.StartNew();
             try
             {
-                var b = new SqlConnectionStringBuilder(connString);
+                var b = new DbConnectionStringBuilder { ConnectionString = connString };
+                var maxPool = ReadSetting(b, "Max Pool Size", "MaxPoolSize") ?? "provider default";
+                var minPool = ReadSetting(b, "Min Pool Size", "MinPoolSize") ?? "provider default";
+                var pooling = ReadSetting(b, "Pooling") ?? "provider default";
+                var timeout = ReadSetting(b, "Connect Timeout", "Connection Timeout", "Timeout") ?? "provider default";
                 sw.Stop();
                 return new ProbeStep
                 {
@@ -282,10 +295,10 @@ namespace CVIS.Unity.Infrastructure.Diagnostics.Probes
                     Success   = true,
                     ElapsedMs = sw.ElapsedMilliseconds,
                     Message   =
-                        $"MaxPool={b.MaxPoolSize} | " +
-                        $"MinPool={b.MinPoolSize} | " +
-                        $"Pooling={b.Pooling} | " +
-                        $"Timeout={b.ConnectTimeout}s"
+                        $"MaxPool={maxPool} | " +
+                        $"MinPool={minPool} | " +
+                        $"Pooling={pooling} | " +
+                        $"Timeout={timeout}"
                 };
             }
             catch (Exception ex)
@@ -369,8 +382,9 @@ namespace CVIS.Unity.Infrastructure.Diagnostics.Probes
         {
             try
             {
-                var b          = new SqlConnectionStringBuilder(connString);
-                var dataSource = b.DataSource;
+                var b = new DbConnectionStringBuilder { ConnectionString = connString };
+                var dataSource = ReadSetting(b, "Data Source", "Server", "Host") ?? "unknown";
+                var configuredPort = ReadSetting(b, "Port");
 
                 if (dataSource.Contains(","))
                 {
@@ -382,12 +396,24 @@ namespace CVIS.Unity.Infrastructure.Diagnostics.Probes
                     ? dataSource.Split('\\')[0]
                     : dataSource;
 
-                return (host, 1433);
+                return (host, int.TryParse(configuredPort, out var port) ? port : 1433);
             }
             catch
             {
                 return ("unknown", 1433);
             }
+        }
+
+        private static string? ReadSetting(
+            DbConnectionStringBuilder builder, params string[] keys)
+        {
+            foreach (var key in keys)
+            {
+                if (builder.TryGetValue(key, out var value))
+                    return value?.ToString();
+            }
+
+            return null;
         }
     }
 }
