@@ -7,12 +7,20 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="Diagnostics\DbConnectionDiagnostic.cs" />
+    <Compile Remove="Diagnostics\DbConnectionProbe.cs" />
+    <Compile Remove="Diagnostics\IDbConnectionProbe.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.25">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.25" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.1" />
+    <PackageReference Include="Microsoft.VisualStudio.Web.CodeGeneration.Core" Version="8.0.23" />
     <PackageReference Include="OpenTelemetry" Version="1.15.0" />
     <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.15.0" />
     <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.15.0" />
@@ -22,6 +30,15 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CVIS.Unity.Core\CVIS.Unity.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="..\docs\audit\policy-drift-audit-reference.sql"
+                      Link="Audit\policy-drift-audit-reference.sql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Diagnostics\" />
   </ItemGroup>
 
 </Project>

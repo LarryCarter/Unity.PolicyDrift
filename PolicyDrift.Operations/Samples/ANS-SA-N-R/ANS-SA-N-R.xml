@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Device Name="Imported Platforms">
+  <Policies>
+    <Policy ID="ANS-SA-N-R"
+            PlatformBaseID="UnixSSH"
+            PlatformBaseType="UNIX"
+            PlatformBaseProtocol="SSH"
+            AutoChangeOnAdd="No"
+            AutoVerifyOnAdd="No">
+      <Properties>
+        <Required>
+          <Property Name="Address" />
+          <Property Name="Username" />
+        </Required>
+        <Optional />
+      </Properties>
+      <LinkedPasswords>
+        <Link Name="ReconcileAccount" PropertyIndex="3" />
+      </LinkedPasswords>
+      <TicketingSystem EnterTicketingInfo="No" ValidateTicketNumber="No" />
+    </Policy>
+  </Policies>
+</Device>

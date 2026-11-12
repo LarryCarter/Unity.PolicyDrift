@@ -1,10 +1,12 @@
-﻿using NUnit.Framework;
-using Moq;
-using Microsoft.Extensions.Configuration;
-using CVIS.Unity.Core.Interfaces;
+﻿using CVIS.Unity.Core.Interfaces;
 using CVIS.Unity.Infrastructure.Data;
-using CVIS.Unity.PolicyDrift.Orchestrator.Workflows;
+using CVIS.Unity.Infrastructure.Services;
 using CVIS.Unity.PolicyDrift.Orchestration.Services;
+using CVIS.Unity.PolicyDrift.Orchestrator.Workflows;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Moq;
+using NUnit.Framework;
 
 namespace CVIS.Unity.Tests
 {
@@ -13,29 +15,49 @@ namespace CVIS.Unity.Tests
     {
         private PlatformWorkflow _workflow;
         private Mock<IUnityEventPublisher> _mockPublisher;
+        private PolicyDbContext _dbContext;
 
         [SetUp]
         public void Setup()
         {
-            // Mocks for dependencies not being tested
             var mockFileSystem = new Mock<IFileSystemService>();
             _mockPublisher = new Mock<IUnityEventPublisher>();
-            var mockConfig = new Mock<IConfiguration>();
+            var mockDriftPath = new Mock<IPolicyDriftPathProvider>();
             var mockFileProcessor = new Mock<FileProcessor>();
+            var mockSignalFiles = new Mock<ISignalFileService>();
 
-            // Note: DB context is not needed for this pure logic test
+            // Real config with all defaults — all scopes enabled, SNOW not required
+            var config = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>())
+                .Build();
+
+            var driftComparison = new DriftComparisonService(config, _mockPublisher.Object);
+
+            var options = new DbContextOptionsBuilder<PolicyDbContext>()
+                .UseInMemoryDatabase(Guid.NewGuid().ToString())
+                .Options;
+            _dbContext = new PolicyDbContext(options);
+
             _workflow = new PlatformWorkflow(
                 mockFileSystem.Object,
                 _mockPublisher.Object,
-                mockConfig.Object,
+                mockDriftPath.Object,
+                config,
                 mockFileProcessor.Object,
-                null!);
+                mockSignalFiles.Object,
+                driftComparison,
+                _dbContext);
+        }
+
+        [TearDown]
+        public void TearDown()
+        {
+            _dbContext?.Dispose();
         }
 
         [Test]
         public void CompareAttributes_Should_Ignore_Noise_Keys()
         {
-            // Arrange: Baseline and Current differ ONLY by an ignored key
             var baseline = new Dictionary<string, string>
             {
                 { "INI:Timeout", "200" },
@@ -44,20 +66,18 @@ namespace CVIS.Unity.Tests
             var current = new Dictionary<string, string>
             {
                 { "INI:Timeout", "200" },
-                { "INI:ApiVersion", "v2" } // Changed but should be ignored
+                { "INI:ApiVersion", "v2" }
             };
 
-            // Act
             var drift = _workflow.CompareAttributes(baseline, current);
 
-            // Assert: Drift report should be empty
-            Assert.That(drift.Count, Is.EqualTo(0), "Drift should be empty when only ignored keys change.");
+            Assert.That(drift.Count, Is.EqualTo(0),
+                "Drift should be empty when only ignored keys change.");
         }
 
         [Test]
         public void CompareAttributes_Should_Detect_All_Drift_Types()
         {
-            // Arrange
             var baseline = new Dictionary<string, string>
             {
                 { "INI:Timeout", "200" },
@@ -65,15 +85,12 @@ namespace CVIS.Unity.Tests
             };
             var current = new Dictionary<string, string>
             {
-                { "INI:Timeout", "500" },        // MODIFIED
-                { "XML:AutoChangeOnAdd", "No" }  // ADDED
-                // PasswordLength is REMOVED
+                { "INI:Timeout", "500" },
+                { "XML:AutoChangeOnAdd", "No" }
             };
 
-            // Act
             var drift = _workflow.CompareAttributes(baseline, current);
 
-            // Assert
             Assert.Multiple(() =>
             {
                 Assert.That(drift["INI:Timeout"], Does.Contain("MODIFIED"));
@@ -86,52 +103,40 @@ namespace CVIS.Unity.Tests
         [Test]
         public void CompareAttributes_Should_Prioritize_IgnoreList_Over_Added()
         {
-            // Arrange: A new key appears that is in the ignore list
             var baseline = new Dictionary<string, string>();
             var current = new Dictionary<string, string>
             {
                 { "INI:ApiVersion", "v2" }
             };
 
-            // Act
             var drift = _workflow.CompareAttributes(baseline, current);
 
-            // Assert
             Assert.That(drift.ContainsKey("INI:ApiVersion"), Is.False);
         }
 
         [Test]
         public void CompareAttributes_Should_Detect_Drift_Across_All_Three_Scopes()
         {
-            // Arrange: A baseline representing a full CyberArk Platform ZIP
             var baseline = new Dictionary<string, string>
             {
-                { "INI:Timeout", "200" },                        // INI Setting
-                { "XML:PlatformBaseID", "UnixSSH" },             // XML Metadata
-                { "DLL:FileHash", "sha256:old_binary_hash" }      // Binary Fingerprint
+                { "INI:Timeout", "200" },
+                { "XML:PlatformBaseID", "UnixSSH" },
+                { "DLL:FileHash", "sha256:old_binary_hash" }
             };
 
-            // Act: Current state where all three have drifted
             var current = new Dictionary<string, string>
             {
-                { "INI:Timeout", "500" },                        // Modified
-                { "XML:PlatformBaseID", "UnixSSH" },             // No Change
-                // XML:AutoChangeOnAdd is MISSING                // Removed
-                { "DLL:FileHash", "sha256:new_binary_hash" }      // Modified (Critical!)
+                { "INI:Timeout", "500" },
+                { "XML:PlatformBaseID", "UnixSSH" },
+                { "DLL:FileHash", "sha256:new_binary_hash" }
             };
 
             var drift = _workflow.CompareAttributes(baseline, current);
 
-            // Assert: Verify the Arsenal caught all three
             Assert.Multiple(() =>
             {
-                // 1. Check INI Drift
                 Assert.That(drift["INI:Timeout"], Does.Contain("MODIFIED"));
-
-                // 2. Check Binary Tampering
                 Assert.That(drift["DLL:FileHash"], Does.Contain("MODIFIED"));
-
-                // 3. Check for the absence of XML drift where none occurred
                 Assert.That(drift.ContainsKey("XML:PlatformBaseID"), Is.False);
             });
         }

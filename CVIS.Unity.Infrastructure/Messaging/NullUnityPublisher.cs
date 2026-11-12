@@ -1,38 +1,69 @@
-﻿using System;
+using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
-using CVIS.Unity.Core.Interfaces; // This is critical!
+using CVIS.Unity.Core.Interfaces;
 
 namespace CVIS.Unity.Infrastructure.Messaging
 {
-    // Datyrix: You must explicitly inherit from the interface here
     public class NullUnityPublisher : IUnityEventPublisher
     {
-        public Task PublishStatusEventAsync(string policyId, string status, object? metadata = null)
+        public void LogInfo(string message)    { }
+        public void LogWarning(string message) { }
+        public void LogError(string message, Exception? ex = null) { }
+
+        public Task PublishStatusEventAsync(
+            string entityType, string entityId,
+            string domain, string subDomain,
+            string status, object? metadata = null)
         {
-            // Validated placeholder for tonight's run
-            Console.WriteLine($"[KAFKA_PLACEHOLDER] {policyId} Status Update: {status}");
+            Console.WriteLine(
+                $"[NULL] [{entityType}] {entityId} -> {status} ({domain}/{subDomain})");
             return Task.CompletedTask;
         }
 
-        public Task PublishAuditEventAsync(string policyId, string action, string actor = "System")
+        public Task PublishAuditEventAsync(
+            string entityType, string entityId,
+            string domain, string subDomain,
+            string action, string actor = "System")
         {
-            Console.WriteLine($"[KAFKA_PLACEHOLDER] {policyId} Audit Event: {action} by {actor}");
+            Console.WriteLine(
+                $"[NULL] [{entityType}] {entityId} -> {action} " +
+                $"by {actor} ({domain}/{subDomain})");
             return Task.CompletedTask;
         }
 
-        void IUnityEventPublisher.LogInfo(string message)
+        public Task PublishKafkaDriftAsync(
+            string entityType, string entityId,
+            string domain, string subDomain,
+            Dictionary<string, string> differences,
+            Dictionary<string, string> baseline,
+            string? correlationId = null)
         {
-            throw new NotImplementedException();
+            Console.WriteLine(
+                $"[NULL] [{entityType}] {entityId} ({domain}/{subDomain}): " +
+                $"{differences.Count} changes detected.");
+            return Task.CompletedTask;
         }
 
-        void IUnityEventPublisher.LogError(string message, Exception? ex)
+        public Task PublishDiagnosticEventAsync(
+            string entityType, string entityId,
+            string domain, string subDomain,
+            string eventName,
+            Dictionary<string, string> diagnosticMetadata,
+            string? correlationId = null,
+            string severity = "HIGH")
         {
-            throw new NotImplementedException();
+            Console.WriteLine(
+                $"[NULL-DIAGNOSTIC] [{entityType}] {entityId} " +
+                $"({domain}/{subDomain}) | {eventName} | {severity}");
+
+            foreach (var kvp in diagnosticMetadata)
+                Console.WriteLine($"  {kvp.Key}: {kvp.Value}");
+
+            return Task.CompletedTask;
         }
 
-        void IUnityEventPublisher.LogWarning(string message)
-        {
-            throw new NotImplementedException();
-        }
+        public Task SendEmailAsync(string to, string subject, string htmlBody)
+            => throw new NotImplementedException();
     }
 }
