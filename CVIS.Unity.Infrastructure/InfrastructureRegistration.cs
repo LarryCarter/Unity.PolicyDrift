@@ -1,10 +1,13 @@
 ﻿using CVIS.Unity.Core.Interfaces;
 using CVIS.Unity.Infrastructure.Data;
 using CVIS.Unity.Infrastructure.Messaging;
+using CVIS.Unity.Infrastructure.Monitoring;
 using CVIS.Unity.Infrastructure.Services;
+using CVIS.Unity.Infrastructure.Audit;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Win32;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
 
@@ -17,7 +20,8 @@ namespace CVIS.Unity.Infrastructure
             // 1. Database Context (Scoped) SQL 2018 Connection
             var connectionString = config.GetConnectionString("DefaultConnection");
             services.AddDbContext<PolicyDbContext>(options =>
-                options.UseSqlServer(connectionString));
+                options.UseSqlServer(connectionString, sqlOptions =>
+                    sqlOptions.MigrationsHistoryTable("__EFMigrationsHistory", "unity")));
 
             // 2. The Publisher - Changed to Scoped to fix the DI Lifetime issue
             // Unity Placeholder
@@ -25,12 +29,12 @@ namespace CVIS.Unity.Infrastructure
             // The ImmediateUnityPublisher is a simple implementation that logs events directly.
             // Replace with KafkaPublisher when ready.
             services.AddScoped<IUnityEventPublisher, ImmediateUnityPublisher>();
+            services.AddScoped<PolicyDriftAuditService>();
+            services.AddScoped<IPolicyDriftAuditPublisher, UnityEventPolicyDriftAuditPublisher>();
+            services.AddScoped<IPolicyDriftReportAuditor, PolicyDriftReportAuditor>();
 
             // 3. Core Services
-            
-            // System Services
-            services.AddTransient<IFileSystemService, FileSystemService>();
-            
+
             // Mock CyberArk Vault Service contains, not real API calls,
             // but simulates the expected behavior for testing and development.
             services.AddTransient<ICyberArkVaultService, MockVaultService>();
@@ -38,6 +42,19 @@ namespace CVIS.Unity.Infrastructure
 
             // 4. Telemetry (The OTLP Hook)
             services.AddTransient<IFileSystemService, FileSystemService>();
+
+            // Register the new policy extraction service
+            services.AddTransient<IPackageExtractionService, PackageExtractionService>();
+
+            // Register the new Baseline Update Service
+            services.AddTransient<ISignalFileService, SignalFileService>();
+
+
+            // Register the new pathing authority
+            services.AddTransient<IPolicyDriftPathProvider, PolicyDriftPathProvider>();
+
+            // Register the new drift comparison service
+            services.AddSingleton<IDriftComparisonService, DriftComparisonService>();
 
             return services;
         }

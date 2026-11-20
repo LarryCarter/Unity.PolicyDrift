@@ -1,4 +1,5 @@
 ﻿using CVIS.Unity.Core.Interfaces;
+using Microsoft.Extensions.Configuration;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -11,31 +12,26 @@ namespace CVIS.Unity.PolicyDrift.Orchestrator.Workflows
     {
         protected readonly IFileSystemService _fileSystem;
         protected readonly IUnityEventPublisher _publisher;
+        protected readonly IPolicyDriftPathProvider _driftPath;
 
-        protected PolicyWorkflowBase(IFileSystemService fileSystem, IUnityEventPublisher publisher)
+        protected PolicyWorkflowBase(
+            IFileSystemService fileSystem,
+            IUnityEventPublisher publisher,
+            IPolicyDriftPathProvider driftPath)
         {
-            _fileSystem = fileSystem;
-            _publisher = publisher;
+            _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
+            _publisher = publisher ?? throw new ArgumentNullException(nameof(publisher));
+            _driftPath = driftPath ?? throw new ArgumentNullException(nameof(driftPath));
         }
 
         public abstract string WorkflowName { get; }
 
-        public async Task ExecuteAsync()
+        public virtual async Task ExecuteAsync()
         {
-            // 1. Fetch the list of PolicyIDs from CyberArk (Placeholder for tonight)
             var policies = await GetPoliciesAsync();
-
             foreach (var policyId in policies)
             {
-                // 2. Logic from your diagram: Check for {PolicyID}.txt
-                if (_fileSystem.SignalFileExists(policyId))
-                {
-                    await HandleBaselineUpdate(policyId);
-                }
-                else
-                {
-                    await HandleDriftCheck(policyId);
-                }
+                await HandleDriftCheck(policyId);
             }
         }
 
